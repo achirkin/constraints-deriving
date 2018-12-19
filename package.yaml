@@ -1,0 +1,56 @@
+name:                constraints-deriving
+version:             0.1.0.0
+github:              "achirkin/constraints-deriving"
+license:             BSD3
+author:              "Artem Chirkin"
+maintainer:          "example@example.com"
+copyright:           "Copyright: (c) 2019 Artem Chirkin"
+synopsis:            Constraint manipulation
+category:            Constraints
+description:         Please see the README on GitHub at <https://github.com/achirkin/constraints-deriving#readme>
+
+extra-source-files:
+- README.md
+
+ghc-options: -Wall
+
+dependencies:
+- base >= 4.9 && < 5
+
+flags:
+  constraints:
+    description:
+      Use vanilla constraints package as a dependency
+      instead of the manual minimalistic definitions copied from there.
+    default: false
+    manual: true
+
+library:
+  source-dirs: src
+  dependencies:
+  - ghc >= 8.0.1
+  exposed-modules:
+  - Data.Constraint.Bare
+  when:
+  - condition: flag(constraints)
+    then:
+      verbatim: |
+        reexported-modules:
+            constraints:Data.Constraint
+          , constraints:Data.Constraint.Unsafe
+      dependencies:
+      - constraints >= 0.6
+    else:
+      exposed-modules:
+      - Data.Constraint
+      - Data.Constraint.Unsafe
+      source-dirs: src-constraints
+
+tests:
+  constraints-deriving-test:
+    main:                Spec.hs
+    source-dirs:         test
+    ghc-options:
+    - -dcore-lint
+    dependencies:
+    - constraints-deriving
