@@ -29,7 +29,7 @@ import           Data.Constraint.Bare
 import           Data.Constraint.Deriving
 import           Data.Semigroup
 import           GHC.Base
-import           GHC.TypeLits         (KnownNat, Nat)
+import           GHC.TypeLits             (KnownNat, Nat)
 import           Unsafe.Coerce
 
 import           Lib.BackendFamily
@@ -54,32 +54,32 @@ type instance DataDims (VecBackend _  n _) = n
 
 
 
-{-# ANN inferEq ToInstanceOverlappable #-}
+{-# ANN inferEq (ToInstance Overlappable) #-}
 inferEq :: forall t n b . ( KnownBackend b, Eq t) => BareConstraint (Eq (VecBackend t n b))
 inferEq = case inferBase @t @n @b undefined of
   Dict -> toVecBackend @Eq @t @n @b $ inferBackendInstance
 
-{-# ANN inferShow ToInstanceOverlappable #-}
+{-# ANN inferShow (ToInstance Overlappable) #-}
 inferShow :: forall t n b . ( KnownBackend b, Show t)
           => BareConstraint (Show (VecBackend t n b))
 inferShow = case inferBase @t @n @b undefined of
   Dict -> toVecBackend @Show @t @n @b $ inferBackendInstance
 
 
-{-# ANN inferOrd ToInstanceOverlappable #-}
+{-# ANN inferOrd (ToInstance Overlappable) #-}
 inferOrd :: forall t n b . ( KnownBackend b, Ord t)
           => BareConstraint (Ord (VecBackend t n b))
 inferOrd = case inferBase @t @n @b undefined of
   Dict -> toVecBackend @Ord @t @n @b $ inferBackendInstance
 
-{-# ANN inferSemigroup ToInstanceOverlappable #-}
+{-# ANN inferSemigroup (ToInstance Overlappable) #-}
 inferSemigroup :: forall t n b . ( KnownBackend b, Num t)
           => BareConstraint (Semigroup (VecBackend t n b))
 inferSemigroup = case inferBase @t @n @b undefined of
   Dict -> toVecBackend @Semigroup @t @n @b $ inferBackendInstance
 
 
-{-# ANN inferMonoid ToInstanceOverlappable #-}
+{-# ANN inferMonoid (ToInstance Overlappable) #-}
 inferMonoid :: forall t n b . ( KnownBackend b, Num t, KnownNat n)
           => BareConstraint (Monoid (VecBackend t n b))
 inferMonoid = case inferBase @t @n @b undefined of
