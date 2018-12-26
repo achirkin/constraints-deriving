@@ -49,6 +49,7 @@ import           GhcPlugins    (SrcSpan, AnnTarget (..), Bind (..), CommandLineO
 import qualified GhcPlugins
 import qualified IfaceEnv
 import qualified InstEnv
+import qualified FamInstEnv
 import           MonadUtils    (MonadIO (..))
 import           Panic         (panicDoc)
 import qualified TcRnMonad
@@ -262,10 +263,10 @@ deriveAllPass gs = go (mg_tcs gs) annotateds gs
     -- All exports are processed, just return ModGuts
     go [] anns guts = do
       unless (GhcPlugins.isNullUFM anns) $
-        pluginWarning $ "One or more DeriveAll annotations lack accompanying type definitions:"
+        pluginWarning $ "One or more DeriveAll annotations are ignored:"
           $+$ GhcPlugins.vcat
             (map (pprBulletNameLoc . fst) . join $ GhcPlugins.eltsUFM anns)
-          $+$ "Note, DeriveAll is meant to be used on type definitions only."
+          $+$ "Note, DeriveAll is meant to be used only on type declarations."
       return guts
 
     -- process type definitions present in the set of annotations
@@ -305,19 +306,38 @@ deriveAll tyCon guts
   | True <- GhcPlugins.isNewTyCon tyCon
   , False <- GhcPlugins.isClassTyCon tyCon
   , [dataCon] <- GhcPlugins.tyConDataCons tyCon
-    = pluginError $ GhcPlugins.hsep
+  , (tvs, theta, tyargs, tyval) <- GhcPlugins.dataConSig dataCon
+    = do
+      dcInsts <- lookupDeriveContextInstances guts tyCon
+
+      pluginError $ GhcPlugins.hsep
        [ "Got there"
        , ppr tyCon
        , "="
        , ppr dataCon
-       ]
+       ] $$ GhcPlugins.vcat
+         (map ppr dcInsts)
+         $$ GhcPlugins.hsep
+       [ ppr tvs, ppr theta, ppr tyargs, ppr tyval ]
 -- not a good newtype declaration
   | otherwise 
     = pluginLocatedError
        (GhcPlugins.nameSrcSpan $ GhcPlugins.tyConName tyCon)
        "DeriveAll works only on plain newtype declarations"
 
-
+{-
+  Find all possible instance of DeriveContext type family for a given TyCon
+ -}
+lookupDeriveContextInstances :: ModGuts -> TyCon -> CorePluginM [FamInstEnv.FamInst]
+lookupDeriveContextInstances guts tyCon = do
+    pkgFamInstEnv <- liftCoreM GhcPlugins.getPackageFamInstEnv
+    dcTyCon <- ask tyConDeriveContext
+    let allInsts = FamInstEnv.lookupFamInstEnvByTyCon (pkgFamInstEnv, mg_fam_inst_env guts) dcTyCon
+    return $ filter check allInsts
+  where
+    check fi = case GhcPlugins.tyConAppTyCon_maybe <$> FamInstEnv.fi_tys fi of
+      Just tc : _ -> tc == tyCon
+      _           -> False
 
 deriveAllInstances :: ModGuts -> CorePluginM ModGuts
 deriveAllInstances guts = do

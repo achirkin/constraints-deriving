@@ -64,6 +64,15 @@ data TestData a = TData a a Int
 newtype TestNewtype t n = TestNewtypeC (Backend t n)
 newtype TestNewtype2 t n b = TestNewtype2C (Backend t n)
 
+{-# ANN type TestNewtype3 DeriveAll #-}
+newtype TestNewtype3 a = TestNewtype3C a
+-- Enumerate specific instances
+type instance DeriveContext (TestNewtype3 Bool) = ()
+type instance DeriveContext (TestNewtype3 Int)  = ()
+type instance DeriveContext (TestNewtype3 (Maybe a)) = ()
+type instance DeriveContext (TestNewtype3 (VecBackend t n b)) = b ~ Backend t n
+
+
 {-# ANN type Newclass DeriveAll #-}
 class Newclass a where
   hereAmI :: a
