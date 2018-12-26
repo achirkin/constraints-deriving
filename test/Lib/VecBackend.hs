@@ -1,20 +1,19 @@
-{-# LANGUAGE AllowAmbiguousTypes        #-}
-{-# LANGUAGE ConstraintKinds            #-}
-{-# LANGUAGE DataKinds                  #-}
-{-# LANGUAGE FlexibleContexts           #-}
-{-# LANGUAGE FlexibleInstances          #-}
-{-# LANGUAGE GADTs                      #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE KindSignatures             #-}
-{-# LANGUAGE MagicHash                  #-}
-{-# LANGUAGE PatternSynonyms            #-}
-{-# LANGUAGE RankNTypes                 #-}
-{-# LANGUAGE RoleAnnotations            #-}
-{-# LANGUAGE ScopedTypeVariables        #-}
-{-# LANGUAGE StandaloneDeriving         #-}
-{-# LANGUAGE TypeApplications           #-}
-{-# LANGUAGE TypeFamilies               #-}
-{-# LANGUAGE UndecidableInstances       #-}
+{-# LANGUAGE AllowAmbiguousTypes  #-}
+{-# LANGUAGE ConstraintKinds      #-}
+{-# LANGUAGE DataKinds            #-}
+{-# LANGUAGE FlexibleContexts     #-}
+{-# LANGUAGE FlexibleInstances    #-}
+{-# LANGUAGE GADTs                #-}
+{-# LANGUAGE KindSignatures       #-}
+{-# LANGUAGE MagicHash            #-}
+{-# LANGUAGE PatternSynonyms      #-}
+{-# LANGUAGE RankNTypes           #-}
+{-# LANGUAGE RoleAnnotations      #-}
+{-# LANGUAGE ScopedTypeVariables  #-}
+{-# LANGUAGE StandaloneDeriving   #-}
+{-# LANGUAGE TypeApplications     #-}
+{-# LANGUAGE TypeFamilies         #-}
+{-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -fplugin Data.Constraint.Deriving #-}
 
 module Lib.VecBackend
@@ -35,6 +34,7 @@ import           Unsafe.Coerce
 import           Lib.BackendFamily
 
 
+{-# ANN VecBackend DeriveAll #-}
 type role VecBackend phantom phantom representational
 -- I need two layers of wrappers to provide default overlappable instances to
 -- all type classes using KnownBackend mechanics.
@@ -44,6 +44,14 @@ newtype VecBackend (t :: Type) (n :: Nat) (backend :: Type)
   = VecBackend { _getBackend :: backend }
 type instance DataElemType (VecBackend t _ _) = t
 type instance DataDims (VecBackend _  n _) = n
+-- I use this type instance to inform `DeriveAll` core plugin that backend is an instance
+-- of type family `Backend t n`.
+-- This allows the plugin to find all possible instances of the type family and
+-- then lookup corresponding class instances.
+-- Otherwise, the plugin would have to derive all instances for all types in scope,
+-- because the newtype declaration is too general without these additional constraints.
+type instance DeriveContext (VecBackend t n b) = b ~ Backend t n
+
 
 -- -- Note, deriving KnownBackend goes in a not intuitive way:
 -- -- VecBackend t n b ==> DataFrame t n ==> Backend t n;
@@ -51,7 +59,6 @@ type instance DataDims (VecBackend _  n _) = n
 -- instance KnownBackend (DataFrame t n) => KnownBackend (VecBackend t n b) where
 --   bSing = unsafeCoerce# (bSing :: BackendSing (DataFrame t n))
 --   {-# INLINE bSing #-}
-
 
 
 {-# ANN inferEq (ToInstance Overlappable) #-}
