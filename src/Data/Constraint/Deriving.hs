@@ -1,13 +1,16 @@
 {-# LANGUAGE CPP                #-}
 {-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE KindSignatures     #-}
 {-# LANGUAGE LambdaCase         #-}
 {-# LANGUAGE OverloadedStrings  #-}
 {-# LANGUAGE RecordWildCards    #-}
+{-# LANGUAGE TypeFamilies       #-}
 module Data.Constraint.Deriving
   ( plugin
   , ToInstance (..)
   , OverlapMode (..)
   , DeriveAll (..)
+  , DeriveContext
   ) where
 
 import           Class
@@ -15,25 +18,27 @@ import           CoAxiom
 import           Control.Monad (join)
 import           Data.Data     (Data)
 import           Data.IORef    (IORef, modifyIORef', newIORef, readIORef)
+import qualified Data.Kind     as Kind
 import           Data.Maybe    (catMaybes, fromMaybe, mapMaybe, maybeToList)
 import           Data.Monoid   (Any (..), First (..))
 import qualified Finder
 import           GhcPlugins    (AnnTarget (..), Bind (..), CommandLineOption,
                                 CoreBind, CoreM, CoreToDo (..), DFunId,
-                                Expr (..), FastString, IdDetails (..),
-                                ModGuts (..), Module, ModuleName, OccName,
+                                Expr (..), FastString, Id, IdDetails (..),
+                                ModGuts (..), Module, ModuleName, Name, OccName,
                                 Plugin (..), SDoc, SourceText (..), TyCon,
-                                TyVar, Type, Unique, binderVar, caseBinder,
-                                defaultPlugin, deserializeWithData,
+                                TyVar, Type, UniqFM, Unique, binderVar,
+                                caseBinder, defaultPlugin, deserializeWithData,
                                 emptyTCvSubst, eps_PTE, eqType, errorMsg,
-                                extendTCvSubst, findAnns, fsLit, getHscEnv,
-                                getUniqueSupplyM, getUniquesM, hm_details, hsep,
-                                idName, idType, isNewTyCon, lookupHpt,
-                                lookupThing, lookupTyCon, md_types, mkAnnEnv,
-                                mkExportedLocalId, mkExternalName, mkFunTy,
-                                mkModuleName, mkOccName, mkPiTys,
-                                mkSpecForAllTys, mkTcOcc, mkTyConApp, mkTyVarTy,
-                                mkUnsafeCo, moduleName, occName, occNameSpace,
+                                extendTCvSubst, findAnns, fsLit, getAnnotations,
+                                getHscEnv, getUniqueSupplyM, getUniquesM,
+                                hm_details, hsep, idName, idType, isNewTyCon,
+                                lookupHpt, lookupId, lookupThing, lookupTyCon,
+                                md_types, mkAnnEnv, mkExportedLocalId,
+                                mkExternalName, mkFunTy, mkModuleName,
+                                mkOccName, mkPiTys, mkSpecForAllTys, mkTcOcc,
+                                mkTyConApp, mkTyVarTy, mkUnsafeCo, mkVarOcc,
+                                moduleName, occName, occNameSpace,
                                 occNameString, ppr, setIdDetails, setIdType,
                                 splitFunTy_maybe, splitPiTys,
                                 splitTyConApp_maybe, substTyAddInScope,
@@ -57,12 +62,12 @@ newtype ToInstance = ToInstance { overlapMode :: OverlapMode }
 data OverlapMode
   = NoOverlap
     -- ^ This instance must not overlap another `NoOverlap` instance.
-    -- However, it may be overlapped by `Overlapping` instances,
-    -- and it may overlap `Overlappable` instances.
+    --   However, it may be overlapped by `Overlapping` instances,
+    --   and it may overlap `Overlappable` instances.
   | Overlappable
     -- ^ Silently ignore this instance if you find a
-    -- more specific one that matches the constraint
-    -- you are trying to resolve
+    --   more specific one that matches the constraint
+    --   you are trying to resolve
   | Overlapping
     -- ^ Silently ignore any more general instances that may be
     --   used to solve the constraint.
@@ -70,8 +75,8 @@ data OverlapMode
     -- ^ Equivalent to having both `Overlapping` and `Overlappable` flags.
   | Incoherent
     -- ^ Behave like Overlappable and Overlapping, and in addition pick
-    -- an an arbitrary one if there are multiple matching candidates, and
-    -- don't worry about later instantiation
+    --   an an arbitrary one if there are multiple matching candidates, and
+    --   don't worry about later instantiation
   deriving (Eq, Show, Read, Data)
 
 
@@ -81,7 +86,12 @@ data OverlapMode
 data DeriveAll = DeriveAll
   deriving (Eq, Show, Data)
 
-
+-- | This type family is used to impose constraints on type parameters when looking up type instances
+--   for the `DeriveAll` core plugin.
+--
+--   `DeriveAll` uses only those instances that satisfy the specified constraint.
+--   If the constraint is not specified, it is assumed to be `()`.
+type family DeriveContext (t :: Kind.Type) :: Kind.Constraint
 
 -- | To use the plugin, add
 --
@@ -163,10 +173,13 @@ try m = CorePluginM $ fmap Just . runCorePluginM m
 --
 --   Its components are supposed to be computed at most once, when they are needed.
 data CorePluginEnv = CorePluginEnv
-  { modConstraint       :: CorePluginM Module
-  , modConstraintBare   :: CorePluginM Module
-  , tyConDict           :: CorePluginM TyCon
-  , tyConBareConstraint :: CorePluginM TyCon
+  { modConstraint         :: CorePluginM Module
+  , modConstraintBare     :: CorePluginM Module
+  , modConstraintDeriving :: CorePluginM Module
+  , tyConDict             :: CorePluginM TyCon
+  , tyConBareConstraint   :: CorePluginM TyCon
+  , tyConDeriveContext    :: CorePluginM TyCon
+  , funDictToBare         :: CorePluginM Id
   }
 
 -- | Ask a field of the CorePluginEnv environment.
@@ -185,15 +198,29 @@ defCorePluginEnv = CorePluginEnv
         mm <- try $ lookupModule mnConstraintBare [pnConstraintsDeriving]
         saveAndReturn mm $ \a e -> e { modConstraintBare = a }
 
+    , modConstraintDeriving = do
+        mm <- try $ lookupModule mnConstraintDeriving [pnConstraintsDeriving]
+        saveAndReturn mm $ \a e -> e { modConstraintDeriving = a }
+
     , tyConDict = do
         m <- ask modConstraint
-        mtc <- try $ lookupTyConByOccName m tnDict
+        mtc <- try $ lookupName m tnDict >>= lookupTyCon
         saveAndReturn mtc $ \a e -> e { tyConDict = a }
 
     , tyConBareConstraint = do
         m <- ask modConstraintBare
-        mtc <- try $ lookupTyConByOccName m tnBareConstraint
+        mtc <- try $ lookupName m tnBareConstraint >>= lookupTyCon
         saveAndReturn mtc $ \a e -> e { tyConBareConstraint = a }
+
+    , tyConDeriveContext = do
+        m <- ask modConstraintDeriving
+        mtc <- try $ lookupName m tnDeriveContext >>= lookupTyCon
+        saveAndReturn mtc $ \a e -> e { tyConDeriveContext = a }
+    
+    , funDictToBare = do
+        m <- ask modConstraintBare
+        mf <- try $ lookupName m vnDictToBare >>= lookupId
+        saveAndReturn mf $ \a e -> e { funDictToBare = a }
     }
   where
     saveAndReturn Nothing  f = CorePluginM $ \eref ->
@@ -204,17 +231,11 @@ defCorePluginEnv = CorePluginEnv
 
 
 {-
-  Derive all specific instances of `Backend t n` for `DFBackend t n b`
-
-  I want to make all specific instances for DFBackend and different backend types
-
-  Since I guarantee that DFBackend is a newtype wrapper with exactly the same
-  behavior as the backends, I don't even want to derive the instance using
-  the usual machinery. Just declare all instances with existing DFunIds.
+  Derive all specific instances of a type for its newtype wrapper.
 
   Steps:
 
-  1. Lookup type family instances (branches of CoAxiom) of Backend t n
+  1. Lookup a type or type family instances (branches of CoAxiom) of referenced by the newtype decl
 
   2. For every type instance:
 
@@ -222,11 +243,28 @@ defCorePluginEnv = CorePluginEnv
 
      2.2 For every class instance:
 
-         * Use mkLocalInstance with parameters of found instance
-           and replaced RHS types
-         * Add new instance to (mg_insts :: ![ClsInst]) of ModGuts
+         * Use mkLocalInstance with parameters of found instance and replaced RHS types
+         * Create a corresponding top-level binding (DFunId), add it to mg_binds of ModGuts.
+         * Add new instance to (mg_insts :: [ClsInst]) of ModGuts
+         * Update mg_inst_env of ModGuts accordingly.
 
  -}
+deriveAllPass :: ModGuts -> CorePluginM ModGuts
+deriveAllPass guts = do
+    annotateds <-
+      liftCoreM $ getAnnotations deserializeWithData guts :: CorePluginM (UniqFM [DeriveAll])
+    go (reverse $ mg_binds guts) annotateds guts { mg_binds = []}
+  where
+    go :: [CoreBind] -> UniqFM [DeriveAll] -> ModGuts -> CorePluginM ModGuts
+    -- All exports are processed, just return ModGuts
+    go [] anns guts = undefined
+
+
+
+deriveAll :: CoreBind -> CorePluginM (InstEnv.ClsInst, CoreBind)
+deriveAll = undefined
+
+
 deriveAllInstances :: ModGuts -> CorePluginM ModGuts
 deriveAllInstances guts = do
   bf <- lookupBackendFamily
@@ -467,13 +505,13 @@ lookupBackendFamily = do
     mdName = mkModuleName "Lib.BackendFamily"
 
 
-lookupTyConByOccName :: Module -> OccName -> CorePluginM TyCon
-lookupTyConByOccName m occn = do
+lookupName :: Module -> OccName -> CorePluginM Name
+lookupName m occn = do
     hscEnv <- liftCoreM getHscEnv
-    n <- liftIO
+    liftIO
         $ TcRnMonad.initTcForLookup hscEnv
         $ IfaceEnv.lookupOrig m occn
-    lookupTyCon n
+
 
 lookupModule :: ModuleName
              -> [FastString]
@@ -520,13 +558,20 @@ mnConstraint = mkModuleName "Data.Constraint"
 mnConstraintBare :: ModuleName
 mnConstraintBare = mkModuleName "Data.Constraint.Bare"
 
+mnConstraintDeriving :: ModuleName
+mnConstraintDeriving = mkModuleName "Data.Constraint.Deriving"
+
 tnDict :: OccName
 tnDict = mkTcOcc "Dict"
 
 tnBareConstraint :: OccName
 tnBareConstraint = mkTcOcc "BareConstraint"
 
+tnDeriveContext :: OccName
+tnDeriveContext = mkTcOcc "DeriveContext"
 
+vnDictToBare :: OccName
+vnDictToBare = mkVarOcc "dictToBare"
 
 -- -- | Replace all occurrences of one type in another.
 -- replaceTypeOccurrences :: Type -> Type -> Type -> Type
