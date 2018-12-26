@@ -17,10 +17,10 @@
 {-# OPTIONS_GHC -fplugin Data.Constraint.Deriving #-}
 
 module Lib.VecBackend
-  ( VecBackend(..)
-  , inferEq, inferOrd, inferShow, inferSemigroup, inferMonoid
-  )
-where
+  -- ( VecBackend(..)
+  -- , inferEq, inferOrd, inferShow, inferSemigroup, inferMonoid
+  -- )
+  where
 
 
 import           Data.Constraint
@@ -34,6 +34,8 @@ import           Unsafe.Coerce
 import           Lib.BackendFamily
 
 
+{-# ANN type VecBackend DeriveAll #-}
+{-# ANN type VecBackend DeriveAll #-}
 {-# ANN VecBackend DeriveAll #-}
 type role VecBackend phantom phantom representational
 -- I need two layers of wrappers to provide default overlappable instances to
@@ -52,6 +54,31 @@ type instance DataDims (VecBackend _  n _) = n
 -- because the newtype declaration is too general without these additional constraints.
 type instance DeriveContext (VecBackend t n b) = b ~ Backend t n
 
+{-# ANN type TestData DeriveAll #-}
+{-# ANN type TestNewtype DeriveAll #-}
+{-# ANN type TestNewtype2 DeriveAll #-}
+{-# ANN TestNewtype2C DeriveAll #-}
+{-# ANN TestNewtype2C DeriveAll #-}
+
+data TestData a = TData a a Int
+newtype TestNewtype t n = TestNewtypeC (Backend t n)
+newtype TestNewtype2 t n b = TestNewtype2C (Backend t n)
+
+{-# ANN type Newclass DeriveAll #-}
+class Newclass a where
+  hereAmI :: a
+
+{-# ANN type Properclass DeriveAll #-}
+class Properclass a where
+  p1 :: a
+  p2 :: (a, a)
+
+{-# ANN type TestTypeType DeriveAll #-}
+type TestTypeType t n = TestNewtype t n
+
+{-# ANN type TestTF DeriveAll #-}
+type family TestTF t (n :: Nat)
+type instance TestTF t n = TestNewtype t n
 
 -- -- Note, deriving KnownBackend goes in a not intuitive way:
 -- -- VecBackend t n b ==> DataFrame t n ==> Backend t n;
