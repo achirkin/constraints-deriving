@@ -5,6 +5,7 @@
 {-# LANGUAGE OverloadedStrings  #-}
 {-# LANGUAGE RecordWildCards    #-}
 {-# LANGUAGE TypeFamilies       #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 module Data.Constraint.Deriving
   ( plugin
   , ToInstance (..)
@@ -15,14 +16,14 @@ module Data.Constraint.Deriving
 
 import           Class
 import           CoAxiom
-import           Control.Monad (join)
-import           Data.Data     (Data)
+import           Control.Monad (join, unless)
+import           Data.Data     (Data, typeRep)
 import           Data.IORef    (IORef, modifyIORef', newIORef, readIORef)
 import qualified Data.Kind     as Kind
 import           Data.Maybe    (catMaybes, fromMaybe, mapMaybe, maybeToList)
 import           Data.Monoid   (Any (..), First (..))
 import qualified Finder
-import           GhcPlugins    (AnnTarget (..), Bind (..), CommandLineOption,
+import           GhcPlugins    (SrcSpan, AnnTarget (..), Bind (..), CommandLineOption,
                                 CoreBind, CoreM, CoreToDo (..), DFunId,
                                 Expr (..), FastString, Id, IdDetails (..),
                                 ModGuts (..), Module, ModuleName, Name, OccName,
@@ -30,7 +31,7 @@ import           GhcPlugins    (AnnTarget (..), Bind (..), CommandLineOption,
                                 TyVar, Type, UniqFM, Unique, binderVar,
                                 caseBinder, defaultPlugin, deserializeWithData,
                                 emptyTCvSubst, eps_PTE, eqType, errorMsg,
-                                extendTCvSubst, findAnns, fsLit, getAnnotations,
+                                extendTCvSubst, findAnns, fsLit,
                                 getHscEnv, getUniqueSupplyM, getUniquesM,
                                 hm_details, hsep, idName, idType, isNewTyCon,
                                 lookupHpt, lookupId, lookupThing, lookupTyCon,
@@ -44,13 +45,15 @@ import           GhcPlugins    (AnnTarget (..), Bind (..), CommandLineOption,
                                 splitTyConApp_maybe, substTyAddInScope,
                                 tyCoVarsOfTypeWellScoped, tyConClass_maybe,
                                 tyConName, typeEnvCoAxioms, varName, warnMsg,
-                                ($$))
+                                ($$), ($+$))
 import qualified GhcPlugins
 import qualified IfaceEnv
 import qualified InstEnv
 import           MonadUtils    (MonadIO (..))
 import           Panic         (panicDoc)
 import qualified TcRnMonad
+import Data.Proxy (Proxy (..))
+import qualified ErrUtils
 
 -- | A marker to tell the core plugin to convert BareConstraint top-level binding into
 --   an instance declaration.
@@ -113,9 +116,9 @@ install _ todo = do
   eref <- liftIO $ newIORef defCorePluginEnv
   -- if a plugin pass totally  fails to do anything useful,
   -- copy original ModGuts as its output, so that next passes can do their jobs.
-  return ( CoreDoPluginPass "Data.Constraint.Deriving.deriveAllInstances"
-             (\x -> fromMaybe x <$> runCorePluginM (deriveAllInstances x) eref)
-         : CoreDoPluginPass "Data.Constraint.Deriving.toInstance"
+  return ( CoreDoPluginPass "Data.Constraint.Deriving.DeriveAll"
+             (\x -> fromMaybe x <$> runCorePluginM (deriveAllPass x) eref)
+         : CoreDoPluginPass "Data.Constraint.Deriving.ToInstance"
              (\x -> fromMaybe x <$> runCorePluginM (toInstance x) eref)
          : todo)
 
@@ -250,19 +253,70 @@ defCorePluginEnv = CorePluginEnv
 
  -}
 deriveAllPass :: ModGuts -> CorePluginM ModGuts
-deriveAllPass guts = do
-    annotateds <-
-      liftCoreM $ getAnnotations deserializeWithData guts :: CorePluginM (UniqFM [DeriveAll])
-    go (reverse $ mg_binds guts) annotateds guts { mg_binds = []}
+deriveAllPass gs = go (mg_tcs gs) annotateds gs
   where
-    go :: [CoreBind] -> UniqFM [DeriveAll] -> ModGuts -> CorePluginM ModGuts
+    annotateds :: UniqFM [(Name, DeriveAll)]
+    annotateds = getModuleAnns gs
+    
+    go :: [TyCon] -> UniqFM [(Name, DeriveAll)] -> ModGuts -> CorePluginM ModGuts
     -- All exports are processed, just return ModGuts
-    go [] anns guts = undefined
+    go [] anns guts = do
+      unless (GhcPlugins.isNullUFM anns) $
+        pluginWarning $ "One or more DeriveAll annotations lack accompanying type definitions:"
+          $+$ GhcPlugins.vcat
+            (map (pprBulletNameLoc . fst) . join $ GhcPlugins.eltsUFM anns)
+          $+$ "Note, DeriveAll is meant to be used on type definitions only."
+      return guts
+
+    -- process type definitions present in the set of annotations
+    go (x:xs) anns guts
+      | Just ((xn,_):ds) <- GhcPlugins.lookupUFM anns x = do
+      unless (null ds) $
+        pluginLocatedWarning (GhcPlugins.nameSrcSpan xn) $
+          "Ignoring redundant DeriveAll annotions" $$
+          GhcPlugins.hcat
+          [ "(the plugin needs only one annotation per type definition, but got "
+          , ppr (length ds + 1)
+          , ")"
+          ]
+      (newInstances, newBinds) <- unzip . fromMaybe [] <$> try (deriveAll x guts)
+      -- add new definitions and continue
+      go xs (GhcPlugins.delFromUFM anns x) guts
+        { mg_insts    = newInstances ++ mg_insts guts
+        , mg_inst_env = InstEnv.extendInstEnvList (mg_inst_env guts) newInstances
+        , mg_binds    = newBinds ++ mg_binds guts
+        }
+
+    -- ignore the rest of type definitions 
+    go (_:xs) anns guts = go xs anns guts
+
+    pprBulletNameLoc n = GhcPlugins.hsep
+      [GhcPlugins.bullet, ppr $ GhcPlugins.occName n, ppr $ GhcPlugins.nameSrcSpan n]
+                   
 
 
+{-
+  At this point, the plugin has found a candidate type.
+  The first thing I do here is to make sure this is indeed a proper newtype declaration.
+ -}
+deriveAll :: TyCon -> ModGuts -> CorePluginM [(InstEnv.ClsInst, CoreBind)]
+deriveAll tyCon guts
+-- match good newtypes only
+  | True <- GhcPlugins.isNewTyCon tyCon
+  , False <- GhcPlugins.isClassTyCon tyCon
+  , [dataCon] <- GhcPlugins.tyConDataCons tyCon
+    = pluginError $ GhcPlugins.hsep
+       [ "Got there"
+       , ppr tyCon
+       , "="
+       , ppr dataCon
+       ]
+-- not a good newtype declaration
+  | otherwise 
+    = pluginLocatedError
+       (GhcPlugins.nameSrcSpan $ GhcPlugins.tyConName tyCon)
+       "DeriveAll works only on plain newtype declarations"
 
-deriveAll :: CoreBind -> CorePluginM (InstEnv.ClsInst, CoreBind)
-deriveAll = undefined
 
 
 deriveAllInstances :: ModGuts -> CorePluginM ModGuts
@@ -532,18 +586,34 @@ lookupModule mdName pkgs = do
 
 
 pluginError :: SDoc -> CorePluginM a
-pluginError msg = do
-  liftCoreM . errorMsg $ hsep
-    [ "Error occurred while running"
-    , ppr pnConstraintsDeriving
-    , "core plugin:"]
-    $$ msg
-  exception
+pluginError msg
+  = pluginProblemMsg Nothing ErrUtils.SevError msg >> exception
 
+pluginLocatedError :: SrcSpan -> SDoc -> CorePluginM a
+pluginLocatedError loc msg
+  = pluginProblemMsg (Just loc) ErrUtils.SevError msg >> exception
 
 pluginWarning :: SDoc -> CorePluginM ()
-pluginWarning msg = liftCoreM . warnMsg $ hsep
-   [ppr pnConstraintsDeriving, "core plugin:"] $$ msg
+pluginWarning = pluginProblemMsg Nothing ErrUtils.SevWarning
+
+pluginLocatedWarning :: SrcSpan -> SDoc -> CorePluginM ()
+pluginLocatedWarning loc = pluginProblemMsg (Just loc) ErrUtils.SevWarning
+
+
+
+pluginProblemMsg :: Maybe SrcSpan
+                 -> ErrUtils.Severity
+                 -> SDoc
+                 -> CorePluginM ()
+pluginProblemMsg mspan sev msg = do
+  dflags <- liftCoreM GhcPlugins.getDynFlags
+  loc    <- case mspan of
+    Just sp -> pure sp
+    Nothing -> liftCoreM GhcPlugins.getSrcSpanM
+  unqual <- liftCoreM GhcPlugins.getPrintUnqualified
+  liftIO $ GhcPlugins.putLogMsg
+    dflags GhcPlugins.NoReason sev loc (GhcPlugins.mkErrStyle dflags unqual) msg
+
 
 
 pnConstraintsDeriving :: FastString
@@ -614,3 +684,22 @@ toOverlapFlag m = GhcPlugins.OverlapFlag (getOMode m) False
 mkPiTys :: [Var] -> Type -> Type
 mkPiTys = mkPiTypes
 #endif
+
+-- | Similar to `GhcPlugins.getAnnotations`, but keeps the annotation target.
+--   Also, it is hardcoded to `deserializeWithData`.
+--   Looks only for annotations defined in this module.
+--   Ignores module annotations.
+getModuleAnns :: forall a . Data a => ModGuts -> UniqFM [(Name, a)]
+getModuleAnns = go . mg_anns
+  where
+    valTRep = typeRep (Proxy :: Proxy a)
+    go :: [GhcPlugins.Annotation] -> UniqFM [(Name, a)]
+    go [] = GhcPlugins.emptyUFM
+    go (GhcPlugins.Annotation
+         (GhcPlugins.NamedTarget n) -- ignore module targets
+         (GhcPlugins.Serialized trep bytes)
+        : as)
+      | trep == valTRep -- match type representations
+      = GhcPlugins.addToUFM_Acc (:) (:[]) (go as) n (n, GhcPlugins.deserializeWithData bytes)
+    -- ignore non-matching annotations
+    go (_:as) = go as
