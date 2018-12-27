@@ -23,7 +23,7 @@ import qualified Data.Kind     as Kind
 import           Data.Maybe    (catMaybes, fromMaybe, mapMaybe, maybeToList)
 import           Data.Monoid   (Any (..), First (..))
 import qualified Finder
-import           GhcPlugins    (SrcSpan, AnnTarget (..), Bind (..), CommandLineOption,
+import           GhcPlugins    (DataCon, SrcSpan, AnnTarget (..), Bind (..), CommandLineOption,
                                 CoreBind, CoreM, CoreToDo (..), DFunId,
                                 Expr (..), FastString, Id, IdDetails (..),
                                 ModGuts (..), Module, ModuleName, Name, OccName,
@@ -184,6 +184,7 @@ data CorePluginEnv = CorePluginEnv
   , tyConBareConstraint   :: CorePluginM TyCon
   , tyConDeriveContext    :: CorePluginM TyCon
   , funDictToBare         :: CorePluginM Id
+  , tyEmptyConstraint     :: CorePluginM Type
   }
 
 -- | Ask a field of the CorePluginEnv environment.
@@ -225,6 +226,10 @@ defCorePluginEnv = CorePluginEnv
         m <- ask modConstraintBare
         mf <- try $ lookupName m vnDictToBare >>= lookupId
         saveAndReturn mf $ \a e -> e { funDictToBare = a }
+
+    , tyEmptyConstraint = do
+        ec <- flip GhcPlugins.mkTyConApp [] <$> lookupTyCon (GhcPlugins.cTupleTyConName 0)
+        saveAndReturn (Just ec) $ \a e -> e { tyEmptyConstraint = a }
     }
   where
     saveAndReturn Nothing  f = CorePluginM $ \eref ->
@@ -296,9 +301,12 @@ deriveAllPass gs = go (mg_tcs gs) annotateds gs
                    
 
 
-{-
+{- |
   At this point, the plugin has found a candidate type.
   The first thing I do here is to make sure this is indeed a proper newtype declaration.
+  Then, lookup the DeriveContext-specified constraints.
+  Then, enumerate specific type instances (based on constraints and type families in the newtype def.)
+  Then, lookup all class instances for the found type instances.
  -}
 deriveAll :: TyCon -> ModGuts -> CorePluginM [(InstEnv.ClsInst, CoreBind)]
 deriveAll tyCon guts
@@ -306,28 +314,42 @@ deriveAll tyCon guts
   | True <- GhcPlugins.isNewTyCon tyCon
   , False <- GhcPlugins.isClassTyCon tyCon
   , [dataCon] <- GhcPlugins.tyConDataCons tyCon
-  , (tvs, theta, tyargs, tyval) <- GhcPlugins.dataConSig dataCon
     = do
       dcInsts <- lookupDeriveContextInstances guts tyCon
+      unpackedInsts <-
+        if null dcInsts
+        then (:[]) <$> mockInstance tyCon
+        else return $ map unpackInstance dcInsts
+      allMatchingTypes <- join <$>
+        traverse (lookupMatchingBaseTypes guts tyCon dataCon) unpackedInsts
+      join <$> traverse (lookupMatchingInstances guts tyCon) allMatchingTypes
 
-      pluginError $ GhcPlugins.hsep
-       [ "Got there"
-       , ppr tyCon
-       , "="
-       , ppr dataCon
-       ] $$ GhcPlugins.vcat
-         (map ppr dcInsts)
-         $$ GhcPlugins.hsep
-       [ ppr tvs, ppr theta, ppr tyargs, ppr tyval ]
 -- not a good newtype declaration
   | otherwise 
     = pluginLocatedError
        (GhcPlugins.nameSrcSpan $ GhcPlugins.tyConName tyCon)
        "DeriveAll works only on plain newtype declarations"
 
-{-
-  Find all possible instance of DeriveContext type family for a given TyCon
- -}
+  where
+    mockInstance tc = do
+      let tvs = GhcPlugins.tyConTyVars tc
+          tys = GhcPlugins.mkTyVarTys tvs
+      rhs <- ask tyEmptyConstraint
+      return (tvs, tys, rhs)
+    unpackInstance i
+      = let tvs = FamInstEnv.fi_tvs i
+            tys  = case GhcPlugins.tyConAppArgs_maybe <$> FamInstEnv.fi_tys i of
+              [Just ts] -> ts
+              _ -> panicDoc "DeriveAll" $
+                GhcPlugins.hsep
+                  [ "I faced an impossible type when matching an instance of type family DeriveContext:"
+                  , ppr i, "at"
+                  , ppr $ GhcPlugins.nameSrcSpan $ GhcPlugins.getName i]
+            rhs = FamInstEnv.fi_rhs i
+        in (tvs, tys, rhs) 
+      
+
+-- | Find all possible instances of DeriveContext type family for a given TyCon
 lookupDeriveContextInstances :: ModGuts -> TyCon -> CorePluginM [FamInstEnv.FamInst]
 lookupDeriveContextInstances guts tyCon = do
     pkgFamInstEnv <- liftCoreM GhcPlugins.getPackageFamInstEnv
@@ -339,10 +361,45 @@ lookupDeriveContextInstances guts tyCon = do
       Just tc : _ -> tc == tyCon
       _           -> False
 
+
+-- | For a given type and constraints, enumerate all possible concrete types;
+--   specify overlapping mode if encountered with conflicting instances of closed type families.
+--
+--   returns: (overlap mode, inner type, newtype)
+lookupMatchingBaseTypes :: ModGuts
+                        -> TyCon
+                        -> DataCon
+                        -> ([TyVar], [Type], Type)
+                        -> CorePluginM [(OverlapMode, Type, Type)]
+lookupMatchingBaseTypes guts tyCon dataCon coAx = do
+   pluginWarning $ GhcPlugins.hsep
+       [ "lookupMatchingBasetypes:"
+       , ppr tyCon
+       , "="
+       , ppr dataCon
+       ] $$ ppr coAx
+   return []
+
+-- | For a given most concrete type, find all possible class instances.
+--   Derive them all by creating a new CoreBind with a casted type.
+lookupMatchingInstances :: ModGuts
+                        -> TyCon
+                        -> (OverlapMode, Type, Type)
+                        -> CorePluginM [(InstEnv.ClsInst, CoreBind)]
+lookupMatchingInstances guts tyCon (overlap, baseType, newType) =
+  pluginError $ GhcPlugins.hsep
+    [ "lookupMatchingInstances:"
+    , ppr tyCon
+    , ppr (show overlap)
+    , ppr baseType
+    , ppr newType
+    ]
+
+
 deriveAllInstances :: ModGuts -> CorePluginM ModGuts
 deriveAllInstances guts = do
-  bf <- lookupBackendFamily
-  deriveAllInstances' bf guts
+    bf <- lookupBackendFamily
+    deriveAllInstances' bf guts
 
 deriveAllInstances'  :: CoAxiom Branched -> ModGuts -> CorePluginM ModGuts
 deriveAllInstances' backendFamily  guts = do
