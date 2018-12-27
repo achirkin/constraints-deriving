@@ -1,11 +1,11 @@
-{-# LANGUAGE CPP                #-}
-{-# LANGUAGE DeriveDataTypeable #-}
-{-# LANGUAGE KindSignatures     #-}
-{-# LANGUAGE LambdaCase         #-}
-{-# LANGUAGE OverloadedStrings  #-}
-{-# LANGUAGE RecordWildCards    #-}
-{-# LANGUAGE TypeFamilies       #-}
+{-# LANGUAGE CPP                 #-}
+{-# LANGUAGE DeriveDataTypeable  #-}
+{-# LANGUAGE KindSignatures      #-}
+{-# LANGUAGE LambdaCase          #-}
+{-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE RecordWildCards     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeFamilies        #-}
 module Data.Constraint.Deriving
   ( plugin
   , ToInstance (..)
@@ -22,39 +22,38 @@ import           Data.IORef    (IORef, modifyIORef', newIORef, readIORef)
 import qualified Data.Kind     as Kind
 import           Data.Maybe    (catMaybes, fromMaybe, mapMaybe, maybeToList)
 import           Data.Monoid   (Any (..), First (..))
+import           Data.Proxy    (Proxy (..))
+import qualified ErrUtils
+import qualified FamInstEnv
 import qualified Finder
-import           GhcPlugins    (DataCon, SrcSpan, AnnTarget (..), Bind (..), CommandLineOption,
-                                CoreBind, CoreM, CoreToDo (..), DFunId,
+import           GhcPlugins    (AnnTarget (..), Bind (..), CommandLineOption,
+                                CoreBind, CoreM, CoreToDo (..), DFunId, DataCon,
                                 Expr (..), FastString, Id, IdDetails (..),
                                 ModGuts (..), Module, ModuleName, Name, OccName,
-                                Plugin (..), SDoc, SourceText (..), TyCon,
-                                TyVar, Type, UniqFM, Unique, binderVar,
+                                Plugin (..), SDoc, SourceText (..), SrcSpan,
+                                TyCon, TyVar, Type, UniqFM, Unique, binderVar,
                                 caseBinder, defaultPlugin, deserializeWithData,
-                                emptyTCvSubst, eps_PTE, eqType, errorMsg,
-                                extendTCvSubst, findAnns, fsLit,
-                                getHscEnv, getUniqueSupplyM, getUniquesM,
-                                hm_details, hsep, idName, idType, isNewTyCon,
-                                lookupHpt, lookupId, lookupThing, lookupTyCon,
-                                md_types, mkAnnEnv, mkExportedLocalId,
-                                mkExternalName, mkFunTy, mkModuleName,
-                                mkOccName, mkPiTys, mkSpecForAllTys, mkTcOcc,
-                                mkTyConApp, mkTyVarTy, mkUnsafeCo, mkVarOcc,
-                                moduleName, occName, occNameSpace,
-                                occNameString, ppr, setIdDetails, setIdType,
-                                splitFunTy_maybe, splitPiTys,
+                                emptyTCvSubst, eps_PTE, eqType, extendTCvSubst,
+                                findAnns, fsLit, getHscEnv, getUniqueSupplyM,
+                                getUniquesM, hm_details, hsep, idName, idType,
+                                isNewTyCon, lookupHpt, lookupId, lookupThing,
+                                lookupTyCon, md_types, mkAnnEnv,
+                                mkExportedLocalId, mkExternalName, mkFunTy,
+                                mkModuleName, mkOccName, mkPiTys,
+                                mkSpecForAllTys, mkTcOcc, mkTyConApp, mkTyVarTy,
+                                mkUnsafeCo, mkVarOcc, moduleName, occName,
+                                occNameSpace, occNameString, ppr, setIdDetails,
+                                setIdType, splitFunTy_maybe, splitPiTys,
                                 splitTyConApp_maybe, substTyAddInScope,
                                 tyCoVarsOfTypeWellScoped, tyConClass_maybe,
-                                tyConName, typeEnvCoAxioms, varName, warnMsg,
-                                ($$), ($+$))
+                                tyConName, typeEnvCoAxioms, varName, ($$),
+                                ($+$))
 import qualified GhcPlugins
 import qualified IfaceEnv
 import qualified InstEnv
-import qualified FamInstEnv
 import           MonadUtils    (MonadIO (..))
 import           Panic         (panicDoc)
 import qualified TcRnMonad
-import Data.Proxy (Proxy (..))
-import qualified ErrUtils
 
 -- | A marker to tell the core plugin to convert BareConstraint top-level binding into
 --   an instance declaration.
@@ -221,7 +220,7 @@ defCorePluginEnv = CorePluginEnv
         m <- ask modConstraintDeriving
         mtc <- try $ lookupName m tnDeriveContext >>= lookupTyCon
         saveAndReturn mtc $ \a e -> e { tyConDeriveContext = a }
-    
+
     , funDictToBare = do
         m <- ask modConstraintBare
         mf <- try $ lookupName m vnDictToBare >>= lookupId
@@ -263,7 +262,7 @@ deriveAllPass gs = go (mg_tcs gs) annotateds gs
   where
     annotateds :: UniqFM [(Name, DeriveAll)]
     annotateds = getModuleAnns gs
-    
+
     go :: [TyCon] -> UniqFM [(Name, DeriveAll)] -> ModGuts -> CorePluginM ModGuts
     -- All exports are processed, just return ModGuts
     go [] anns guts = do
@@ -293,12 +292,12 @@ deriveAllPass gs = go (mg_tcs gs) annotateds gs
         , mg_binds    = newBinds ++ mg_binds guts
         }
 
-    -- ignore the rest of type definitions 
+    -- ignore the rest of type definitions
     go (_:xs) anns guts = go xs anns guts
 
     pprBulletNameLoc n = GhcPlugins.hsep
       [GhcPlugins.bullet, ppr $ GhcPlugins.occName n, ppr $ GhcPlugins.nameSrcSpan n]
-                   
+
 
 
 {- |
@@ -325,7 +324,7 @@ deriveAll tyCon guts
       join <$> traverse (lookupMatchingInstances guts tyCon) allMatchingTypes
 
 -- not a good newtype declaration
-  | otherwise 
+  | otherwise
     = pluginLocatedError
        (GhcPlugins.nameSrcSpan $ GhcPlugins.tyConName tyCon)
        "DeriveAll works only on plain newtype declarations"
@@ -346,8 +345,8 @@ deriveAll tyCon guts
                   , ppr i, "at"
                   , ppr $ GhcPlugins.nameSrcSpan $ GhcPlugins.getName i]
             rhs = FamInstEnv.fi_rhs i
-        in (tvs, tys, rhs) 
-      
+        in (tvs, tys, rhs)
+
 
 -- | Find all possible instances of DeriveContext type family for a given TyCon
 lookupDeriveContextInstances :: ModGuts -> TyCon -> CorePluginM [FamInstEnv.FamInst]
