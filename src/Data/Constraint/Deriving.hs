@@ -276,8 +276,8 @@ deriveAllPass gs = go (mg_tcs gs) annotateds gs
         pluginLocatedWarning (GhcPlugins.nameSrcSpan xn) $
           "Ignoring redundant DeriveAll annotions" $$
           GhcPlugins.hcat
-          [ "(the plugin needs only one annotation per type definition, but got "
-          , ppr (length ds + 1)
+          [ "(the plugin needs only one annotation per type declaration, but got "
+          , GhcPlugins.speakN (length ds + 1)
           , ")"
           ]
       (newInstances, newBinds) <- unzip . fromMaybe [] <$> try (deriveAll x guts)
