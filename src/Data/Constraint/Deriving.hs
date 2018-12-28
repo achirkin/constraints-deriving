@@ -321,7 +321,7 @@ deriveAll tyCon guts
         else return $ map unpackInstance dcInsts
       allMatchingTypes <- join <$>
         traverse (lookupMatchingBaseTypes guts tyCon dataCon) unpackedInsts
-      join <$> traverse (lookupMatchingInstances guts tyCon) allMatchingTypes
+      join <$> traverse (lookupMatchingInstances guts) allMatchingTypes
 
 -- not a good newtype declaration
   | otherwise
@@ -364,7 +364,8 @@ lookupDeriveContextInstances guts tyCon = do
 -- | For a given type and constraints, enumerate all possible concrete types;
 --   specify overlapping mode if encountered with conflicting instances of closed type families.
 --
---   returns: (overlap mode, inner type, newtype)
+--   returns: (overlap mode, basetype, newtype);
+--            the TyVars of the newtype are a superset of the TyVars of the basetype. 
 lookupMatchingBaseTypes :: ModGuts
                         -> TyCon
                         -> DataCon
@@ -379,26 +380,70 @@ lookupMatchingBaseTypes guts tyCon dataCon coAx = do
        ] $$ ppr coAx
    return []
 
+-- TODO: simplify this further, unmess tyvar situation.
 -- | For a given most concrete type, find all possible class instances.
 --   Derive them all by creating a new CoreBind with a casted type.
+--
+--   Prerequisite: in the tripple (overlapmode, baseType, newType),
+--   TyVars of the newType must be a superset of TyVars of the baseType.
 lookupMatchingInstances :: ModGuts
-                        -> TyCon
                         -> (OverlapMode, Type, Type)
                         -> CorePluginM [(InstEnv.ClsInst, CoreBind)]
-lookupMatchingInstances guts tyCon (overlap, baseType, newType) =
-  pluginError $ GhcPlugins.hsep
-    [ "lookupMatchingInstances:"
-    , ppr tyCon
-    , ppr (show overlap)
-    , ppr baseType
-    , ppr newType
-    ]
+lookupMatchingInstances guts (overlapMode, baseType, newType) =
+    matchInstances <$> getUniquesM
+  where
+    -- lookup class instances here
+    instances = InstEnv.instEnvElts $ mg_inst_env guts
+
+    matchInstances :: [Unique] -> [(InstEnv.ClsInst, CoreBind)]
+    matchInstances uniques = catMaybes $ zipWith ($)
+      [ \u -> let refId = InstEnv.instanceDFunId ci
+                  f i = (i, mkBind refId i)
+               in f <$> matchInstance u refId (InstEnv.instanceHead ci)
+      | ci <- instances
+      ] uniques
+
+    matchInstance :: Unique
+                  -> DFunId
+                  -> ([TyVar], Class, [Type])
+                  -> Maybe InstEnv.ClsInst
+    matchInstance uniq
+                  -- (overlapMode, bTyVars, bOrigT, bNewT)
+                  iDFunId
+                  (iTyVars, iclass, iTyPams)
+      | (Any True, newTyPams) <- matchTys iTyPams
+      , (_, newDFunTy) <- matchTy (idType iDFunId)
+      , newDFunId <- mkExportedLocalId
+          (DFunId isNewType) newName newDFunTy
+        = Just $ InstEnv.mkLocalInstance
+                    newDFunId
+                    (toOverlapFlag overlapMode)
+                    iTyVars iclass newTyPams
+      | otherwise
+        = Nothing
+      where
+        matchTy = maybeReplaceTypeOccurrences (tyCoVarsOfTypeWellScoped newType) baseType newType
+        matchTys = mapM matchTy
+        isNewType = isNewTyCon (classTyCon iclass)
+        newName = mkExternalName uniq (mg_module guts)
+                   newOccName
+                   (mg_loc guts)
+        newOccName
+          = let oname = occName (idName $ iDFunId)
+             in mkOccName (occNameSpace oname)
+                          (occNameString oname ++ "VecBackend")
+
+    -- Create a new DFunId by casting
+    -- the original DFunId to a required type
+    mkBind :: DFunId -> InstEnv.ClsInst -> CoreBind
+    mkBind oldId newInst
+        = NonRec newId
+        $ Cast (Var oldId)
+        $ mkUnsafeCo Representational (idType oldId) (idType newId)
+      where
+        newId = InstEnv.instanceDFunId newInst
 
 
-deriveAllInstances :: ModGuts -> CorePluginM ModGuts
-deriveAllInstances guts = do
-    bf <- lookupBackendFamily
-    deriveAllInstances' bf guts
 
 deriveAllInstances'  :: CoAxiom Branched -> ModGuts -> CorePluginM ModGuts
 deriveAllInstances' backendFamily  guts = do
