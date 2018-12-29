@@ -446,10 +446,36 @@ lookupFamilies t
 
 -- | Enumerate available family instances and substitute type arguments,
 --   such that original type family can be replaced with any of the types in the output list.
-expandFamily :: FamTyConFlav
+expandFamily :: ModGuts
+             -> FamTyConFlav
              -> Type
              -> CorePluginM [Type]
-expandFamily ff ft = undefined
+-- cannot help here
+expandFamily _ AbstractClosedSynFamilyTyCon{} _ = pure []
+-- .. and here
+expandFamily _ BuiltInSynFamTyCon{}           _ = pure []
+-- .. closed type families with no equations cannot be helped either
+expandFamily _ (ClosedSynFamilyTyCon Nothing) _ = pure []
+
+-- For a closed type family, equations are accessible right there
+expandFamily _ (ClosedSynFamilyTyCon (Just coax)) ft = undefined
+
+-- For a data family or an open type family, I need to lookup instances
+-- in the family instance environment.
+expandFamily guts DataFamilyTyCon{} ft = case splitTyConApp_maybe ft of
+  Nothing -> pure []
+  Just (tc, ts) -> expandOpenFamily guts tc ts
+expandFamily guts OpenSynFamilyTyCon ft = case splitTyConApp_maybe ft of
+  Nothing -> pure []
+  Just (tc, ts) -> expandOpenFamily guts tc ts
+
+
+-- | The same as `expandFamily`, but I know already that the family is open.
+expandOpenFamily :: ModGuts
+                 -> TyCon  -- ^ Type family construtor
+                 -> [Type] -- ^ Type family arguments
+                 -> CorePluginM [Type]
+expandOpenFamily guts ft = undefined
 
 
 -- TODO: simplify this further, unmess tyvar situation.
@@ -721,35 +747,6 @@ maybeReplaceTypeOccurrences tv told tnew = replace
         = mkFunTy <$> replace at <*> replace rt
       | otherwise
         = (Any False, t)
-
-
-
--- TODO: remove this completely!
-lookupBackendFamily :: CorePluginM (CoAxiom Branched)
-lookupBackendFamily = do
-    hscEnv <- liftCoreM getHscEnv
-    md <- lookupModule mdName [fsLit "this"]
-    backendName <- liftIO
-        $ TcRnMonad.initTcForLookup hscEnv
-        $ IfaceEnv.lookupOrig md (mkTcOcc "Backend")
-    (eps, hpt) <- liftIO $
-        TcRnMonad.initTcForLookup hscEnv TcRnMonad.getEpsAndHpt
-    backendTyCon <- lookupTyCon backendName
-
-    let getArrayAxiom ca@CoAxiom {..}
-          | co_ax_tc == backendTyCon = Just ca
-          | otherwise                = Nothing
-        cas =  mapMaybe getArrayAxiom $ (do
-          hmi <- maybeToList $ lookupHpt hpt (moduleName md)
-          typeEnvCoAxioms . md_types $ hm_details hmi
-          ) ++ typeEnvCoAxioms (eps_PTE eps)
-
-    return $ case cas of
-      []   -> panicDoc "Data.Constraint.Deriving" $ hsep
-        [ "Could not find instances of the closed type family", ppr backendTyCon ]
-      ca:_ -> ca
-  where
-    mdName = mkModuleName "Lib.BackendFamily"
 
 
 lookupName :: Module -> OccName -> CorePluginM Name
