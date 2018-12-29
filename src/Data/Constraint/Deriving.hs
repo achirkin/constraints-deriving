@@ -14,8 +14,10 @@ module Data.Constraint.Deriving
   , DeriveContext
   ) where
 
-import           Class
-import           CoAxiom
+import           Class         (Class, classTyCon)
+import           CoAxiom       (Branched, CoAxiom (..), coAxBranchIncomps,
+                                coAxBranchLHS, coAxBranchRHS, coAxBranchTyVars,
+                                coAxiomBranches, fromBranches)
 import           Control.Monad (join, unless)
 import           Data.Data     (Data, typeRep)
 import           Data.IORef    (IORef, modifyIORef', newIORef, readIORef)
@@ -26,31 +28,11 @@ import           Data.Proxy    (Proxy (..))
 import qualified ErrUtils
 import qualified FamInstEnv
 import qualified Finder
-import           GhcPlugins    (AnnTarget (..), Bind (..), CommandLineOption,
-                                CoreBind, CoreM, CoreToDo (..), DFunId, DataCon,
-                                Expr (..), FastString, Id, IdDetails (..),
-                                ModGuts (..), Module, ModuleName, Name, OccName,
-                                Plugin (..), SDoc, SourceText (..), SrcSpan,
-                                TyCon, TyVar, Type, UniqFM, Unique, binderVar,
-                                caseBinder, defaultPlugin, deserializeWithData,
-                                emptyTCvSubst, eps_PTE, eqType, extendTCvSubst,
-                                findAnns, fsLit, getHscEnv, getUniqueSupplyM,
-                                getUniquesM, hm_details, hsep, idName, idType,
-                                isNewTyCon, lookupHpt, lookupId, lookupThing,
-                                lookupTyCon, md_types, mkAnnEnv,
-                                mkExportedLocalId, mkExternalName, mkFunTy,
-                                mkModuleName, mkOccName, mkPiTys,
-                                mkSpecForAllTys, mkTcOcc, mkTyConApp, mkTyVarTy,
-                                mkUnsafeCo, mkVarOcc, moduleName, occName,
-                                occNameSpace, occNameString, ppr, setIdDetails,
-                                setIdType, splitFunTy_maybe, splitPiTys,
-                                splitTyConApp_maybe, substTyAddInScope,
-                                tyCoVarsOfTypeWellScoped, tyConClass_maybe,
-                                tyConName, typeEnvCoAxioms, varName, ($$),
-                                ($+$))
+import           GhcPlugins    hiding (OverlapMode (..), overlapMode, (<>))
 import qualified GhcPlugins
 import qualified IfaceEnv
-import qualified InstEnv
+import           InstEnv       (ClsInst, extendInstEnvList, instEnvElts,
+                                instanceDFunId, instanceHead, mkLocalInstance)
 import           MonadUtils    (MonadIO (..))
 import           Panic         (panicDoc)
 import qualified TcRnMonad
@@ -153,10 +135,10 @@ instance Monad CorePluginM where
 instance MonadIO CorePluginM where
   liftIO = liftCoreM . liftIO
 
-instance GhcPlugins.MonadThings CorePluginM where
+instance MonadThings CorePluginM where
   lookupThing = liftCoreM . lookupThing
 
-instance GhcPlugins.MonadUnique CorePluginM where
+instance MonadUnique CorePluginM where
   getUniqueSupplyM = CorePluginM $ const $ Just <$> getUniqueSupplyM
 
 
@@ -227,7 +209,7 @@ defCorePluginEnv = CorePluginEnv
         saveAndReturn mf $ \a e -> e { funDictToBare = a }
 
     , tyEmptyConstraint = do
-        ec <- flip GhcPlugins.mkTyConApp [] <$> lookupTyCon (GhcPlugins.cTupleTyConName 0)
+        ec <- flip mkTyConApp [] <$> lookupTyCon (cTupleTyConName 0)
         saveAndReturn (Just ec) $ \a e -> e { tyEmptyConstraint = a }
     }
   where
@@ -266,37 +248,37 @@ deriveAllPass gs = go (mg_tcs gs) annotateds gs
     go :: [TyCon] -> UniqFM [(Name, DeriveAll)] -> ModGuts -> CorePluginM ModGuts
     -- All exports are processed, just return ModGuts
     go [] anns guts = do
-      unless (GhcPlugins.isNullUFM anns) $
+      unless (isNullUFM anns) $
         pluginWarning $ "One or more DeriveAll annotations are ignored:"
-          $+$ GhcPlugins.vcat
-            (map (pprBulletNameLoc . fst) . join $ GhcPlugins.eltsUFM anns)
+          $+$ vcat
+            (map (pprBulletNameLoc . fst) . join $ eltsUFM anns)
           $+$ "Note, DeriveAll is meant to be used only on type declarations."
       return guts
 
     -- process type definitions present in the set of annotations
     go (x:xs) anns guts
-      | Just ((xn,_):ds) <- GhcPlugins.lookupUFM anns x = do
+      | Just ((xn,_):ds) <- lookupUFM anns x = do
       unless (null ds) $
-        pluginLocatedWarning (GhcPlugins.nameSrcSpan xn) $
+        pluginLocatedWarning (nameSrcSpan xn) $
           "Ignoring redundant DeriveAll annotions" $$
-          GhcPlugins.hcat
+          hcat
           [ "(the plugin needs only one annotation per type declaration, but got "
-          , GhcPlugins.speakN (length ds + 1)
+          , speakN (length ds + 1)
           , ")"
           ]
       (newInstances, newBinds) <- unzip . fromMaybe [] <$> try (deriveAll x guts)
       -- add new definitions and continue
-      go xs (GhcPlugins.delFromUFM anns x) guts
+      go xs (delFromUFM anns x) guts
         { mg_insts    = newInstances ++ mg_insts guts
-        , mg_inst_env = InstEnv.extendInstEnvList (mg_inst_env guts) newInstances
+        , mg_inst_env = extendInstEnvList (mg_inst_env guts) newInstances
         , mg_binds    = newBinds ++ mg_binds guts
         }
 
     -- ignore the rest of type definitions
     go (_:xs) anns guts = go xs anns guts
 
-    pprBulletNameLoc n = GhcPlugins.hsep
-      [GhcPlugins.bullet, ppr $ GhcPlugins.occName n, ppr $ GhcPlugins.nameSrcSpan n]
+    pprBulletNameLoc n = hsep
+      [bullet, ppr $ occName n, ppr $ nameSrcSpan n]
 
 
 
@@ -307,12 +289,12 @@ deriveAllPass gs = go (mg_tcs gs) annotateds gs
   Then, enumerate specific type instances (based on constraints and type families in the newtype def.)
   Then, lookup all class instances for the found type instances.
  -}
-deriveAll :: TyCon -> ModGuts -> CorePluginM [(InstEnv.ClsInst, CoreBind)]
+deriveAll :: TyCon -> ModGuts -> CorePluginM [(ClsInst, CoreBind)]
 deriveAll tyCon guts
 -- match good newtypes only
-  | True <- GhcPlugins.isNewTyCon tyCon
-  , False <- GhcPlugins.isClassTyCon tyCon
-  , [dataCon] <- GhcPlugins.tyConDataCons tyCon
+  | True <- isNewTyCon tyCon
+  , False <- isClassTyCon tyCon
+  , [dataCon] <- tyConDataCons tyCon
     = do
       dcInsts <- lookupDeriveContextInstances guts tyCon
       unpackedInsts <-
@@ -326,24 +308,24 @@ deriveAll tyCon guts
 -- not a good newtype declaration
   | otherwise
     = pluginLocatedError
-       (GhcPlugins.nameSrcSpan $ GhcPlugins.tyConName tyCon)
+       (nameSrcSpan $ tyConName tyCon)
        "DeriveAll works only on plain newtype declarations"
 
   where
     mockInstance tc = do
-      let tvs = GhcPlugins.tyConTyVars tc
-          tys = GhcPlugins.mkTyVarTys tvs
+      let tvs = tyConTyVars tc
+          tys = mkTyVarTys tvs
       rhs <- ask tyEmptyConstraint
       return (tvs, tys, rhs)
     unpackInstance i
       = let tvs = FamInstEnv.fi_tvs i
-            tys  = case GhcPlugins.tyConAppArgs_maybe <$> FamInstEnv.fi_tys i of
+            tys  = case tyConAppArgs_maybe <$> FamInstEnv.fi_tys i of
               [Just ts] -> ts
               _ -> panicDoc "DeriveAll" $
-                GhcPlugins.hsep
+                hsep
                   [ "I faced an impossible type when matching an instance of type family DeriveContext:"
                   , ppr i, "at"
-                  , ppr $ GhcPlugins.nameSrcSpan $ GhcPlugins.getName i]
+                  , ppr $ nameSrcSpan $ getName i]
             rhs = FamInstEnv.fi_rhs i
         in (tvs, tys, rhs)
 
@@ -351,12 +333,12 @@ deriveAll tyCon guts
 -- | Find all possible instances of DeriveContext type family for a given TyCon
 lookupDeriveContextInstances :: ModGuts -> TyCon -> CorePluginM [FamInstEnv.FamInst]
 lookupDeriveContextInstances guts tyCon = do
-    pkgFamInstEnv <- liftCoreM GhcPlugins.getPackageFamInstEnv
+    pkgFamInstEnv <- liftCoreM getPackageFamInstEnv
     dcTyCon <- ask tyConDeriveContext
     let allInsts = FamInstEnv.lookupFamInstEnvByTyCon (pkgFamInstEnv, mg_fam_inst_env guts) dcTyCon
     return $ filter check allInsts
   where
-    check fi = case GhcPlugins.tyConAppTyCon_maybe <$> FamInstEnv.fi_tys fi of
+    check fi = case tyConAppTyCon_maybe <$> FamInstEnv.fi_tys fi of
       Just tc : _ -> tc == tyCon
       _           -> False
 
@@ -365,20 +347,110 @@ lookupDeriveContextInstances guts tyCon = do
 --   specify overlapping mode if encountered with conflicting instances of closed type families.
 --
 --   returns: (overlap mode, basetype, newtype);
---            the TyVars of the newtype are a superset of the TyVars of the basetype. 
+--            the TyVars of the newtype are a superset of the TyVars of the basetype.
 lookupMatchingBaseTypes :: ModGuts
                         -> TyCon
                         -> DataCon
                         -> ([TyVar], [Type], Type)
                         -> CorePluginM [(OverlapMode, Type, Type)]
-lookupMatchingBaseTypes guts tyCon dataCon coAx = do
-   pluginWarning $ GhcPlugins.hsep
-       [ "lookupMatchingBasetypes:"
-       , ppr tyCon
-       , "="
-       , ppr dataCon
-       ] $$ ppr coAx
-   return []
+lookupMatchingBaseTypes guts tyCon dataCon (tvs, tys, constraints) = do
+    pluginWarning $
+      "lookupMatchingBasetypes:" $$
+      hsep
+      [ ppr baseType, "==>", ppr newType ]
+    return []
+  where
+    newType = mkFunTys theta $ mkTyConApp tyCon tys
+    theta = splitCts constraints ++ dataConstraints
+
+    splitCts c = case splitTyConApp_maybe c of
+      Nothing       -> [c]
+      Just (tc, ts) ->
+        if isCTupleTyConName $ getName tc
+        then foldMap splitCts ts
+        else [c]
+
+    (dataConstraints, baseType) = case dataConInstSig dataCon tys of
+      ([], cts, [bt]) -> (cts, bt)
+      _ -> panicDoc "DeriveAll" $ hsep
+        [ "Impossible happened:"
+        , "expected a newtype constructor"
+        , "with no existential tyvars and a single type argument,"
+        , "but got", ppr dataCon
+        , "at", ppr $ nameSrcSpan $ getName dataCon ]
+
+
+
+{-
+  Try to use equality pred types to reduce the number of type variables.
+  Ignore non-equality constraints.
+  If lhs and rhs are both type variables, then replace lhs with rhs.
+  Otherwise, replace bare type vars with more complicated types (i.e. "expand" vars);
+  replace type families with more specific types.
+ -}
+trySimplifyType :: PredType -> Type -> (Any, Type)
+trySimplifyType pt t = case classifyPredType pt of
+    EqPred _ t1 t2
+      | Just tv <- getTyVar_maybe t1 -> (Any False, t)
+    _ -> (Any False, t)
+  where
+
+-- | Try to remove all occurrences of type synonyms.
+clearSynonyms :: Type -> Type
+clearSynonyms t'
+      -- split type constructors
+    | Just (tyCon, tys) <- splitTyConApp_maybe t
+      = mkTyConApp tyCon $ map clearSynonyms tys
+      -- split foralls
+    | (bndrs@(_:_), t1) <- splitPiTys t
+      = mkPiTys bndrs $ clearSynonyms t1
+      -- split arrow types
+    | Just (at, rt) <- splitFunTy_maybe t
+      = mkFunTy (clearSynonyms at) (clearSynonyms rt)
+    | otherwise
+      = t
+  where
+    stripOuter x = case tcView x of
+      Nothing -> x
+      Just y  -> stripOuter y
+    t = stripOuter t'
+
+-- | Find all occurrences of type or data families in the type signature;
+--   group them by TyCons.
+--
+--   Prerequisite: the type must be free of type synonyms (output of clearSynonyms).
+lookupFamilies :: Type -> UniqFM (FamTyConFlav, [Type])
+lookupFamilies t
+      -- split type constructors
+    | Just (tyCon, tys) <- splitTyConApp_maybe t
+      = case famTyConFlav_maybe tyCon of
+          Nothing -> foldr merge emptyUFM $ map lookupFamilies tys
+          Just ff -> unitUFM tyCon (ff, [t])
+      -- split foralls
+    | ((_:_), t') <- splitPiTys t
+      = lookupFamilies t'
+      -- split arrow types
+    | Just (at, rt) <- splitFunTy_maybe t
+      = lookupFamilies at `merge` lookupFamilies rt
+    | otherwise
+      = emptyUFM
+  where
+    merge = plusUFM_C (\(ff,  x) (_,  y) -> (ff, combineLists x y))
+    combineLists []     ys = ys
+    combineLists (x:xs) ys = combineLists xs (addToList x ys)
+    addToList x [] = [x]
+    addToList x (y:ys)
+      | eqType x y = y:ys
+      | otherwise             = y:addToList x ys
+
+
+-- | Enumerate available family instances and substitute type arguments,
+--   such that original type family can be replaced with any of the types in the output list.
+expandFamily :: FamTyConFlav
+             -> Type
+             -> CorePluginM [Type]
+expandFamily ff ft = undefined
+
 
 -- TODO: simplify this further, unmess tyvar situation.
 -- | For a given most concrete type, find all possible class instances.
@@ -393,13 +465,13 @@ lookupMatchingInstances guts (overlapMode, baseType, newType) =
     matchInstances <$> getUniquesM
   where
     -- lookup class instances here
-    instances = InstEnv.instEnvElts $ mg_inst_env guts
+    instances = instEnvElts $ mg_inst_env guts
 
     matchInstances :: [Unique] -> [(InstEnv.ClsInst, CoreBind)]
     matchInstances uniques = catMaybes $ zipWith ($)
-      [ \u -> let refId = InstEnv.instanceDFunId ci
+      [ \u -> let refId = instanceDFunId ci
                   f i = (i, mkBind refId i)
-               in f <$> matchInstance u refId (InstEnv.instanceHead ci)
+               in f <$> matchInstance u refId (instanceHead ci)
       | ci <- instances
       ] uniques
 
@@ -415,7 +487,7 @@ lookupMatchingInstances guts (overlapMode, baseType, newType) =
       , (_, newDFunTy) <- matchTy (idType iDFunId)
       , newDFunId <- mkExportedLocalId
           (DFunId isNewType) newName newDFunTy
-        = Just $ InstEnv.mkLocalInstance
+        = Just $ mkLocalInstance
                     newDFunId
                     (toOverlapFlag overlapMode)
                     iTyVars iclass newTyPams
@@ -441,7 +513,7 @@ lookupMatchingInstances guts (overlapMode, baseType, newType) =
         $ Cast (Var oldId)
         $ mkUnsafeCo Representational (idType oldId) (idType newId)
       where
-        newId = InstEnv.instanceDFunId newInst
+        newId = instanceDFunId newInst
 
 
 
@@ -456,7 +528,7 @@ deriveAllInstances' backendFamily  guts = do
 
     return guts
       { mg_insts = map snd matchedInstances ++ mg_insts guts
-      , mg_inst_env = InstEnv.extendInstEnvList (mg_inst_env guts)
+      , mg_inst_env = extendInstEnvList (mg_inst_env guts)
                     $ map snd matchedInstances
       , mg_binds = map fst matchedInstances ++ mg_binds guts
       }
@@ -481,7 +553,7 @@ deriveAllInstances' backendFamily  guts = do
                         else Incoherent
 
     -- lookup class instances here
-    instances = InstEnv.instEnvElts $ mg_inst_env guts
+    instances = instEnvElts $ mg_inst_env guts
 
     -- DFbackend type constructor is supposed to be defined in this module
     dfBackendTyCon
@@ -495,9 +567,9 @@ deriveAllInstances' backendFamily  guts = do
             ) . getFirst $ foldMap checkDfBackendTyCon $ mg_tcs guts
 
     matchInstances uniques = catMaybes $ zipWith ($)
-      [ \u -> let refId = InstEnv.instanceDFunId ci
+      [ \u -> let refId = instanceDFunId ci
                   f i = (mkBind refId i, i)
-               in f <$> matchInstance u tm refId (InstEnv.instanceHead ci)
+               in f <$> matchInstance u tm refId (instanceHead ci)
       | tm <- typeMaps
       , ci <- instances
       ] uniques
@@ -515,7 +587,7 @@ deriveAllInstances' backendFamily  guts = do
       , (_, newDFunTy) <- matchTy (idType iDFunId)
       , newDFunId <- mkExportedLocalId
           (DFunId isNewType) newName newDFunTy
-        = Just $ InstEnv.mkLocalInstance
+        = Just $ mkLocalInstance
                     newDFunId
                     (toOverlapFlag overlapMode)
                     iTyVars iclass newTyPams
@@ -541,7 +613,7 @@ deriveAllInstances' backendFamily  guts = do
         $ Cast (Var oldId)
         $ mkUnsafeCo Representational (idType oldId) (idType newId)
       where
-        newId = InstEnv.instanceDFunId newInst
+        newId = instanceDFunId newInst
 
 
 toInstance :: ModGuts -> CorePluginM ModGuts
@@ -558,7 +630,7 @@ toInstance' bareConstraintTc guts = do
 
     return guts
       { mg_insts = newInsts ++ mg_insts guts
-      , mg_inst_env = InstEnv.extendInstEnvList (mg_inst_env guts)
+      , mg_inst_env = extendInstEnvList (mg_inst_env guts)
                     $ newInsts
       , mg_binds = parsedBinds
       }
@@ -583,7 +655,7 @@ toInstance' bareConstraintTc guts = do
                 $ setIdType cbVar ntype
        -- TODO: hmm, maybe I need to remove this id from mg_exports at least...
        -- mkLocalInstance :: DFunId -> OverlapFlag -> [TyVar] -> Class -> [Type] -> ClsInst
-      = ([InstEnv.mkLocalInstance ncbVar omode tvs cls tys]
+      = ([mkLocalInstance ncbVar omode tvs cls tys]
         , NonRec ncbVar
           $ Cast cbE $ mkUnsafeCo Representational otype ntype
         )
@@ -701,9 +773,9 @@ lookupModule mdName pkgs = do
       Just md -> return md
 
     findIt he = fmap getIt . liftIO . Finder.findImportedModule he mdName
-    getIt (GhcPlugins.Found _ md)                = Just md
-    getIt (GhcPlugins.FoundMultiple ((md, _):_)) = Just md
-    getIt _                                      = Nothing
+    getIt (Found _ md)                = Just md
+    getIt (FoundMultiple ((md, _):_)) = Just md
+    getIt _                           = Nothing
 
 
 pluginError :: SDoc -> CorePluginM a
@@ -727,13 +799,13 @@ pluginProblemMsg :: Maybe SrcSpan
                  -> SDoc
                  -> CorePluginM ()
 pluginProblemMsg mspan sev msg = do
-  dflags <- liftCoreM GhcPlugins.getDynFlags
+  dflags <- liftCoreM getDynFlags
   loc    <- case mspan of
     Just sp -> pure sp
-    Nothing -> liftCoreM GhcPlugins.getSrcSpanM
-  unqual <- liftCoreM GhcPlugins.getPrintUnqualified
-  liftIO $ GhcPlugins.putLogMsg
-    dflags GhcPlugins.NoReason sev loc (GhcPlugins.mkErrStyle dflags unqual) msg
+    Nothing -> liftCoreM getSrcSpanM
+  unqual <- liftCoreM getPrintUnqualified
+  liftIO $ putLogMsg
+    dflags NoReason sev loc (mkErrStyle dflags unqual) msg
 
 
 
@@ -786,8 +858,8 @@ vnDictToBare = mkVarOcc "dictToBare"
 --       | otherwise
 --         = t
 
-toOverlapFlag :: OverlapMode -> GhcPlugins.OverlapFlag
-toOverlapFlag m = GhcPlugins.OverlapFlag (getOMode m) False
+toOverlapFlag :: OverlapMode -> OverlapFlag
+toOverlapFlag m = OverlapFlag (getOMode m) False
   where
     getOMode NoOverlap    = GhcPlugins.NoOverlap noSourceText
     getOMode Overlapping  = GhcPlugins.Overlapping noSourceText
@@ -806,7 +878,7 @@ mkPiTys :: [Var] -> Type -> Type
 mkPiTys = mkPiTypes
 #endif
 
--- | Similar to `GhcPlugins.getAnnotations`, but keeps the annotation target.
+-- | Similar to `getAnnotations`, but keeps the annotation target.
 --   Also, it is hardcoded to `deserializeWithData`.
 --   Looks only for annotations defined in this module.
 --   Ignores module annotations.
@@ -814,13 +886,13 @@ getModuleAnns :: forall a . Data a => ModGuts -> UniqFM [(Name, a)]
 getModuleAnns = go . mg_anns
   where
     valTRep = typeRep (Proxy :: Proxy a)
-    go :: [GhcPlugins.Annotation] -> UniqFM [(Name, a)]
-    go [] = GhcPlugins.emptyUFM
-    go (GhcPlugins.Annotation
-         (GhcPlugins.NamedTarget n) -- ignore module targets
-         (GhcPlugins.Serialized trep bytes)
+    go :: [Annotation] -> UniqFM [(Name, a)]
+    go [] = emptyUFM
+    go (Annotation
+         (NamedTarget n) -- ignore module targets
+         (Serialized trep bytes)
         : as)
       | trep == valTRep -- match type representations
-      = GhcPlugins.addToUFM_Acc (:) (:[]) (go as) n (n, GhcPlugins.deserializeWithData bytes)
+      = addToUFM_Acc (:) (:[]) (go as) n (n, deserializeWithData bytes)
     -- ignore non-matching annotations
     go (_:as) = go as
