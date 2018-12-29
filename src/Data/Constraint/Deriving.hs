@@ -15,7 +15,7 @@ module Data.Constraint.Deriving
   ) where
 
 import           Class         (Class, classTyCon)
-import           CoAxiom       (Branched, CoAxiom (..), coAxBranchIncomps,
+import           CoAxiom       (coAxiomSingleBranch, CoAxBranch, Branched, CoAxiom (..), coAxBranchIncomps,
                                 coAxBranchLHS, coAxBranchRHS, coAxBranchTyVars,
                                 coAxiomBranches, fromBranches)
 import           Control.Monad (join, unless)
@@ -36,6 +36,7 @@ import           InstEnv       (ClsInst, extendInstEnvList, instEnvElts,
 import           MonadUtils    (MonadIO (..))
 import           Panic         (panicDoc)
 import qualified TcRnMonad
+import qualified Unify
 
 -- | A marker to tell the core plugin to convert BareConstraint top-level binding into
 --   an instance declaration.
@@ -330,12 +331,16 @@ deriveAll tyCon guts
         in (tvs, tys, rhs)
 
 
+-- | Find all instance of a type family in scope by its TyCon.
+lookupTyFamInstances :: ModGuts -> TyCon -> CorePluginM [FamInstEnv.FamInst]
+lookupTyFamInstances guts fTyCon = do
+    pkgFamInstEnv <- liftCoreM getPackageFamInstEnv
+    return $ FamInstEnv.lookupFamInstEnvByTyCon (pkgFamInstEnv, mg_fam_inst_env guts) fTyCon
+  
 -- | Find all possible instances of DeriveContext type family for a given TyCon
 lookupDeriveContextInstances :: ModGuts -> TyCon -> CorePluginM [FamInstEnv.FamInst]
 lookupDeriveContextInstances guts tyCon = do
-    pkgFamInstEnv <- liftCoreM getPackageFamInstEnv
-    dcTyCon <- ask tyConDeriveContext
-    let allInsts = FamInstEnv.lookupFamInstEnvByTyCon (pkgFamInstEnv, mg_fam_inst_env guts) dcTyCon
+    allInsts <- ask tyConDeriveContext >>= lookupTyFamInstances guts
     return $ filter check allInsts
   where
     check fi = case tyConAppTyCon_maybe <$> FamInstEnv.fi_tys fi of
@@ -395,6 +400,7 @@ trySimplifyType pt t = case classifyPredType pt of
     _ -> (Any False, t)
   where
 
+-- TODO: Not sure if I need it at all; most of the API functions look through synonyms
 -- | Try to remove all occurrences of type synonyms.
 clearSynonyms :: Type -> Type
 clearSynonyms t'
@@ -446,36 +452,62 @@ lookupFamilies t
 
 -- | Enumerate available family instances and substitute type arguments,
 --   such that original type family can be replaced with any of the types in the output list.
+--   It passes a TCvSubst alongside with the substituted Type.
+--   The substituted Type may have TyVars from the result set of the substitution,
+--   thus I must be careful with using it:
+--     either somehow substitute back these tyvars from the result,
+--     or substitute the whole type that contains this family occurrence. 
+--
+--   return Nothing   means cannot expand family (shall use it as-is);
+--   return (Just []) means all instances contradict family arguments.
 expandFamily :: ModGuts
              -> FamTyConFlav
              -> Type
-             -> CorePluginM [Type]
+             -> CorePluginM (Maybe [(Type, TCvSubst)])
 -- cannot help here
-expandFamily _ AbstractClosedSynFamilyTyCon{} _ = pure []
+expandFamily _ AbstractClosedSynFamilyTyCon{} _ = pure Nothing
 -- .. and here
-expandFamily _ BuiltInSynFamTyCon{}           _ = pure []
+expandFamily _ BuiltInSynFamTyCon{}           _ = pure Nothing
 -- .. closed type families with no equations cannot be helped either
-expandFamily _ (ClosedSynFamilyTyCon Nothing) _ = pure []
-
+expandFamily _ (ClosedSynFamilyTyCon Nothing) _ = pure Nothing
 -- For a closed type family, equations are accessible right there
-expandFamily _ (ClosedSynFamilyTyCon (Just coax)) ft = undefined
-
+expandFamily _ (ClosedSynFamilyTyCon (Just coax)) ft
+  = pure $ withFamily ft Nothing $ const $ expandClosedFamily (fromBranches $ coAxiomBranches coax)
 -- For a data family or an open type family, I need to lookup instances
 -- in the family instance environment.
-expandFamily guts DataFamilyTyCon{} ft = case splitTyConApp_maybe ft of
-  Nothing -> pure []
-  Just (tc, ts) -> expandOpenFamily guts tc ts
-expandFamily guts OpenSynFamilyTyCon ft = case splitTyConApp_maybe ft of
-  Nothing -> pure []
-  Just (tc, ts) -> expandOpenFamily guts tc ts
+expandFamily guts DataFamilyTyCon{} ft
+  = withFamily ft (pure Nothing) $ expandOpenFamily guts
+expandFamily guts OpenSynFamilyTyCon ft
+  = withFamily ft (pure Nothing) $ expandOpenFamily guts
+
+withFamily :: Type -> a -> (TyCon -> [Type] -> a) -> a
+withFamily ft def f = case splitTyConApp_maybe ft of
+  Nothing -> def
+  Just (tc, ts) -> f tc ts
+
+
+-- | The same as `expandFamily`, but I know already that the family is closed.
+expandClosedFamily :: [CoAxBranch] -> [Type] -> Maybe [(Type, TCvSubst)]
+-- empty type family -- leave it as-is
+expandClosedFamily [] _ = Nothing
+expandClosedFamily bs fTyArgs = Just $ mapMaybe go bs
+  where
+    -- I've decided to use tcMatchTyKis, which means matching Kinds too,
+    -- though I may discover later should I change it to tcMatchTys.
+    go cb = (,) (coAxBranchRHS cb) <$> Unify.tcMatchTyKis fTyArgs (coAxBranchLHS cb) 
 
 
 -- | The same as `expandFamily`, but I know already that the family is open.
 expandOpenFamily :: ModGuts
                  -> TyCon  -- ^ Type family construtor
                  -> [Type] -- ^ Type family arguments
-                 -> CorePluginM [Type]
-expandOpenFamily guts ft = undefined
+                 -> CorePluginM (Maybe [(Type, TCvSubst)])
+expandOpenFamily guts fTyCon fTyArgs = do
+  tfInsts <- lookupTyFamInstances guts fTyCon
+  return $
+    if null tfInsts
+    then Just [] -- No mercy
+    else expandClosedFamily (coAxiomSingleBranch . FamInstEnv.famInstAxiom <$> tfInsts)  fTyArgs
 
 
 -- TODO: simplify this further, unmess tyvar situation.
