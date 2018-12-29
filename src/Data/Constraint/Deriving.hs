@@ -362,10 +362,11 @@ lookupMatchingBaseTypes guts tyCon dataCon (tvs, tys, constraints) = do
     pluginWarning $
       "lookupMatchingBasetypes:" $$
       hsep
-      [ ppr baseType, "==>", ppr newType ]
+      [ ppr theta, "=>", ppr (baseType, newType) ]
     return []
   where
-    newType = mkFunTys theta $ mkTyConApp tyCon tys
+    newType = mkTyConApp tyCon tys
+              -- mkFunTys theta $ mkTyConApp tyCon tys
     theta = splitCts constraints ++ dataConstraints
 
     splitCts c = case splitTyConApp_maybe c of
@@ -386,68 +387,84 @@ lookupMatchingBaseTypes guts tyCon dataCon (tvs, tys, constraints) = do
 
 
 
+
 {-
   Try to use equality pred types to reduce the number of type variables.
   Ignore non-equality constraints.
   If lhs and rhs are both type variables, then replace lhs with rhs.
-  Otherwise, replace bare type vars with more complicated types (i.e. "expand" vars);
-  replace type families with more specific types.
+  Otherwise, replace bare type vars with more complicated types (i.e. "expand" vars)
  -}
 trySimplifyType :: PredType -> Type -> (Any, Type)
 trySimplifyType pt t = case classifyPredType pt of
-    EqPred _ t1 t2
-      | Just tv <- getTyVar_maybe t1 -> (Any False, t)
+    EqPred _ t1 t2 -> go t1 t2
     _ -> (Any False, t)
   where
+    go t1 t2
+      | Just tv <- getTyVar_maybe t1
+      , subst <- extendTCvSubst emptyTCvSubst tv t2
+      , t' <- substTyAddInScope subst t
+        = (Any (eqType t t'), t')
+      | isTyVarTy t2
+        = go t2 t1
+      | otherwise
+        = (Any False, t)
 
--- TODO: Not sure if I need it at all; most of the API functions look through synonyms
--- | Try to remove all occurrences of type synonyms.
-clearSynonyms :: Type -> Type
-clearSynonyms t'
-      -- split type constructors
-    | Just (tyCon, tys) <- splitTyConApp_maybe t
-      = mkTyConApp tyCon $ map clearSynonyms tys
-      -- split foralls
-    | (bndrs@(_:_), t1) <- splitPiTys t
-      = mkPiTys bndrs $ clearSynonyms t1
-      -- split arrow types
-    | Just (at, rt) <- splitFunTy_maybe t
-      = mkFunTy (clearSynonyms at) (clearSynonyms rt)
-    | otherwise
-      = t
-  where
-    stripOuter x = case tcView x of
-      Nothing -> x
-      Just y  -> stripOuter y
-    t = stripOuter t'
+      
+
+-- -- TODO: Not sure if I need it at all; most of the API functions look through synonyms
+-- -- | Try to remove all occurrences of type synonyms.
+-- clearSynonyms :: Type -> Type
+-- clearSynonyms t'
+--       -- split type constructors
+--     | Just (tyCon, tys) <- splitTyConApp_maybe t
+--       = mkTyConApp tyCon $ map clearSynonyms tys
+--       -- split foralls
+--     | (bndrs@(_:_), t1) <- splitPiTys t
+--       = mkPiTys bndrs $ clearSynonyms t1
+--       -- split arrow types
+--     | Just (at, rt) <- splitFunTy_maybe t
+--       = mkFunTy (clearSynonyms at) (clearSynonyms rt)
+--     | otherwise
+--       = t
+--   where
+--     stripOuter x = case tcView x of
+--       Nothing -> x
+--       Just y  -> stripOuter y
+--     t = stripOuter t'
 
 -- | Find all occurrences of type or data families in the type signature;
 --   group them by TyCons.
 --
 --   Prerequisite: the type must be free of type synonyms (output of clearSynonyms).
-lookupFamilies :: Type -> UniqFM (FamTyConFlav, [Type])
+lookupFamilies :: Type -> FoundFamilies
 lookupFamilies t
       -- split type constructors
     | Just (tyCon, tys) <- splitTyConApp_maybe t
       = case famTyConFlav_maybe tyCon of
-          Nothing -> foldr merge emptyUFM $ map lookupFamilies tys
+          Nothing -> foldr mergeFFams emptyUFM $ map lookupFamilies tys
           Just ff -> unitUFM tyCon (ff, [t])
       -- split foralls
     | ((_:_), t') <- splitPiTys t
       = lookupFamilies t'
       -- split arrow types
     | Just (at, rt) <- splitFunTy_maybe t
-      = lookupFamilies at `merge` lookupFamilies rt
+      = lookupFamilies at `mergeFFams` lookupFamilies rt
     | otherwise
       = emptyUFM
+    
+
+type FoundFamilies = UniqFM (FamTyConFlav, [Type])
+
+mergeFFams :: FoundFamilies -> FoundFamilies -> FoundFamilies
+mergeFFams = plusUFM_C (\(ff,  x) (_,  y) -> (ff, combineLists x y))
   where
-    merge = plusUFM_C (\(ff,  x) (_,  y) -> (ff, combineLists x y))
     combineLists []     ys = ys
     combineLists (x:xs) ys = combineLists xs (addToList x ys)
     addToList x [] = [x]
     addToList x (y:ys)
       | eqType x y = y:ys
       | otherwise             = y:addToList x ys
+
 
 
 -- | Enumerate available family instances and substitute type arguments,
@@ -463,7 +480,7 @@ lookupFamilies t
 expandFamily :: ModGuts
              -> FamTyConFlav
              -> Type
-             -> CorePluginM (Maybe [(Type, TCvSubst)])
+             -> CorePluginM (Maybe [(OverlapMode, Type, TCvSubst)])
 -- cannot help here
 expandFamily _ AbstractClosedSynFamilyTyCon{} _ = pure Nothing
 -- .. and here
@@ -487,21 +504,25 @@ withFamily ft def f = case splitTyConApp_maybe ft of
 
 
 -- | The same as `expandFamily`, but I know already that the family is closed.
-expandClosedFamily :: [CoAxBranch] -> [Type] -> Maybe [(Type, TCvSubst)]
+expandClosedFamily :: [CoAxBranch] -> [Type] -> Maybe [(OverlapMode, Type, TCvSubst)]
 -- empty type family -- leave it as-is
 expandClosedFamily [] _ = Nothing
 expandClosedFamily bs fTyArgs = Just $ mapMaybe go bs
   where
     -- I've decided to use tcMatchTyKis, which means matching Kinds too,
     -- though I may discover later should I change it to tcMatchTys.
-    go cb = (,) (coAxBranchRHS cb) <$> Unify.tcMatchTyKis fTyArgs (coAxBranchLHS cb) 
+    go cb = (,,) (overlap cb) (coAxBranchRHS cb) <$> Unify.tcMatchTyKis fTyArgs (coAxBranchLHS cb) 
+
+    overlap cb = if null $ coAxBranchIncomps cb
+                 then Overlapping
+                 else Incoherent
 
 
 -- | The same as `expandFamily`, but I know already that the family is open.
 expandOpenFamily :: ModGuts
                  -> TyCon  -- ^ Type family construtor
                  -> [Type] -- ^ Type family arguments
-                 -> CorePluginM (Maybe [(Type, TCvSubst)])
+                 -> CorePluginM (Maybe [(OverlapMode, Type, TCvSubst)])
 expandOpenFamily guts fTyCon fTyArgs = do
   tfInsts <- lookupTyFamInstances guts fTyCon
   return $
