@@ -14,11 +14,12 @@ module Data.Constraint.Deriving
   , DeriveContext
   ) where
 
-import           Class         (Class, classTyCon)
+import           Class         (ClassATItem, classExtraBigSig, Class, classTyCon)
 import           CoAxiom       (coAxiomSingleBranch, CoAxBranch, Branched, CoAxiom (..), coAxBranchIncomps,
                                 coAxBranchLHS, coAxBranchRHS, coAxBranchTyVars,
                                 coAxiomBranches, fromBranches)
 import           Control.Monad (join, unless)
+import           Control.Applicative (Alternative (..))
 import           Data.Data     (Data, typeRep)
 import           Data.IORef    (IORef, modifyIORef', newIORef, readIORef)
 import qualified Data.Kind     as Kind
@@ -162,11 +163,13 @@ data CorePluginEnv = CorePluginEnv
   { modConstraint         :: CorePluginM Module
   , modConstraintBare     :: CorePluginM Module
   , modConstraintDeriving :: CorePluginM Module
+  , modDataTypeEquality   :: CorePluginM Module
   , tyConDict             :: CorePluginM TyCon
   , tyConBareConstraint   :: CorePluginM TyCon
   , tyConDeriveContext    :: CorePluginM TyCon
   , funDictToBare         :: CorePluginM Id
   , tyEmptyConstraint     :: CorePluginM Type
+  , classTypeEq           :: CorePluginM Class
   }
 
 -- | Ask a field of the CorePluginEnv environment.
@@ -188,6 +191,10 @@ defCorePluginEnv = CorePluginEnv
     , modConstraintDeriving = do
         mm <- try $ lookupModule mnConstraintDeriving [pnConstraintsDeriving]
         saveAndReturn mm $ \a e -> e { modConstraintDeriving = a }
+
+    , modDataTypeEquality = do
+        mm <- try $ lookupModule mnDataTypeEquality [pnBase]
+        saveAndReturn mm $ \a e -> e { modDataTypeEquality = a }
 
     , tyConDict = do
         m <- ask modConstraint
@@ -212,6 +219,14 @@ defCorePluginEnv = CorePluginEnv
     , tyEmptyConstraint = do
         ec <- flip mkTyConApp [] <$> lookupTyCon (cTupleTyConName 0)
         saveAndReturn (Just ec) $ \a e -> e { tyEmptyConstraint = a }
+
+    , classTypeEq = do
+        m <- ask modDataTypeEquality
+        mc <- try $ lookupName m cnTypeEq >>= lookupThing >>= \case
+          ATyCon tc | Just cls <- tyConClass_maybe tc
+            -> return cls
+          _ -> exception 
+        saveAndReturn mc $ \a e -> e { classTypeEq = a }
     }
   where
     saveAndReturn Nothing  f = CorePluginM $ \eref ->
@@ -359,10 +374,11 @@ lookupMatchingBaseTypes :: ModGuts
                         -> ([TyVar], [Type], Type)
                         -> CorePluginM [(OverlapMode, Type, Type)]
 lookupMatchingBaseTypes guts tyCon dataCon (tvs, tys, constraints) = do
+    ftheta <- filterTheta guts theta
     pluginWarning $
       "lookupMatchingBasetypes:" $$
       hsep
-      [ ppr theta, "=>", ppr (baseType, newType) ]
+      [ ppr ftheta, "=>", ppr (baseType, newType) ]
     return []
   where
     newType = mkTyConApp tyCon tys
@@ -385,8 +401,67 @@ lookupMatchingBaseTypes guts tyCon dataCon (tvs, tys, constraints) = do
         , "but got", ppr dataCon
         , "at", ppr $ nameSrcSpan $ getName dataCon ]
 
+{-
+  New plan for generating matching types
 
 
+  Split ThetaType into two lists:
+  
+  [(TyVar, Type)] and the rest of ThetaType
+
+  The rest of ThetaType is considered not useful;
+  it will be just appended to a list of constraints in the result types.
+  [(TyVar, Type)] is a list of equality constraints that might help the algorithm.
+
+  I want to perform three operations related to this list:
+  [1] Add new tyVar ~ TypeFamily, from type family occurrences in the base or newtypes
+      (but also check this type family is not present in the eqs?)
+  [2] Remove an item (TypeFamily) from the list by substituting all possible type family instances
+      into the the base type, the newtype, and the list of constraints.
+  [3] Remove a non-TypeFamily item (i.e. a proper data/newtype TyCon) by substituting TyVar with
+      this type in the base type, the newtype, and the list of constraints.
+
+  Actions [1,2] may lead to an infinite expansion (recursive families), so I need to bound the number of
+  iterations. An approximate implementation plan:
+  1. Apply [1] until no type families present in the basetype or the newtype
+  2. Apply [2] or [3] until no esq left??? 
+
+ -}
+
+
+-- | Split constraints into two groups:
+--   1. The ones used as substitutions
+--   2. Irreducible ones w.r.t. the type expansion algorithm
+filterTheta :: ModGuts -> ThetaType -> CorePluginM ([(TyVar, Type)], ThetaType)
+filterTheta guts = fmap (splitEithers . join) . traverse go'
+  where
+    go' t = do
+      teqClass <- ask classTypeEq
+      let go (EqPred _ t1 t2)
+            | Just tv <- getTyVar_maybe t1
+              = return [Left (tv, t2)]
+            | Just tv <- getTyVar_maybe t2
+              = return [Left (tv, t1)]
+            | otherwise
+              = do
+                tv1 <- newTyVar guts (typeKind t1)
+                tv2 <- newTyVar guts (typeKind t2)
+                return [Left (tv1, t1), Left (tv2, t2)]
+          go (ClassPred c ts)
+            | c == heqClass
+            , [_, _, t1, t2] <- ts
+              = go (EqPred ReprEq t1 t2) 
+            | c == teqClass
+            , [_, t1, t2] <- ts
+              = go (EqPred ReprEq t1 t2)
+            | otherwise
+              = return [Right t]  
+          go _ = return [Right t]
+      go (classifyPredType t)
+      
+
+instance Outputable ClassATItem where
+  ppr _ = "ClassATItem"  
 
 {-
   Try to use equality pred types to reduce the number of type variables.
@@ -451,7 +526,24 @@ lookupFamilies t
       = lookupFamilies at `mergeFFams` lookupFamilies rt
     | otherwise
       = emptyUFM
-    
+
+-- | Depth-first lookup of the first occurrence of any type family.
+lookupFamily :: Type -> Maybe (FamTyConFlav, Type)
+lookupFamily t 
+      -- split type constructors
+    | Just (tyCon, tys) <- splitTyConApp_maybe t
+      = case foldMap (First . lookupFamily) tys of
+          First (Just r) -> Just r
+          First Nothing  -> flip (,) t <$> famTyConFlav_maybe tyCon
+      -- split foralls
+    | ((_:_), t') <- splitPiTys t
+      = lookupFamily t'
+      -- split arrow types
+    | Just (at, rt) <- splitFunTy_maybe t
+      = lookupFamily at <|> lookupFamily rt
+    | otherwise
+      = Nothing
+
 
 type FoundFamilies = UniqFM (FamTyConFlav, [Type])
 
@@ -529,6 +621,20 @@ expandOpenFamily guts fTyCon fTyArgs = do
     if null tfInsts
     then Just [] -- No mercy
     else expandClosedFamily (coAxiomSingleBranch . FamInstEnv.famInstAxiom <$> tfInsts)  fTyArgs
+
+
+-- | Generate new unique type variable 
+newTyVar :: ModGuts -> Kind -> CorePluginM TyVar
+newTyVar guts k = flip mkTyVar k <$> newName guts tvName "gen"
+
+-- | Generate new unique name
+newName :: ModGuts -> NameSpace -> String -> CorePluginM Name
+newName guts nspace nameStr = do
+    u <- getUniqueM
+    return $ mkExternalName u (mg_module guts) occname (mg_loc guts)
+  where
+    occname = mkOccName nspace nameStr
+      
 
 
 -- TODO: simplify this further, unmess tyvar situation.
@@ -865,6 +971,9 @@ pnConstraintsDeriving = "constraints-deriving"
 pnConstraints :: FastString
 pnConstraints = "constraints"
 
+pnBase :: FastString
+pnBase = "base"
+
 mnConstraint :: ModuleName
 mnConstraint = mkModuleName "Data.Constraint"
 
@@ -873,6 +982,9 @@ mnConstraintBare = mkModuleName "Data.Constraint.Bare"
 
 mnConstraintDeriving :: ModuleName
 mnConstraintDeriving = mkModuleName "Data.Constraint.Deriving"
+
+mnDataTypeEquality :: ModuleName
+mnDataTypeEquality = mkModuleName "Data.Type.Equality"
 
 tnDict :: OccName
 tnDict = mkTcOcc "Dict"
@@ -885,6 +997,9 @@ tnDeriveContext = mkTcOcc "DeriveContext"
 
 vnDictToBare :: OccName
 vnDictToBare = mkVarOcc "dictToBare"
+
+cnTypeEq :: OccName
+cnTypeEq = mkTcOcc "~"
 
 -- -- | Replace all occurrences of one type in another.
 -- replaceTypeOccurrences :: Type -> Type -> Type -> Type
