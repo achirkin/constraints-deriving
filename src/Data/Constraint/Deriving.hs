@@ -374,7 +374,7 @@ lookupMatchingBaseTypes :: ModGuts
                         -> ([TyVar], [Type], Type)
                         -> CorePluginM [(OverlapMode, Type, Type)]
 lookupMatchingBaseTypes guts tyCon dataCon (tvs, tys, constraints) = do
-    ftheta <- filterTheta guts theta
+    ftheta <- filterTheta theta
     pluginWarning $
       "lookupMatchingBasetypes:" $$
       hsep
@@ -432,32 +432,38 @@ lookupMatchingBaseTypes guts tyCon dataCon (tvs, tys, constraints) = do
 -- | Split constraints into two groups:
 --   1. The ones used as substitutions
 --   2. Irreducible ones w.r.t. the type expansion algorithm
-filterTheta :: ModGuts -> ThetaType -> CorePluginM ([(TyVar, Type)], ThetaType)
-filterTheta guts = fmap (splitEithers . join) . traverse go'
+filterTheta :: ThetaType -> CorePluginM ([(TyVar, Type)], ThetaType)
+filterTheta = fmap (splitEithers . join) . traverse
+  (\t -> do
+    teqClass <- ask classTypeEq
+    filterTheta' teqClass t
+  )
+
+-- "worker" part of filterTheta (with a provided reference to "~")
+filterTheta' :: Class -> Type -> CorePluginM [Either (TyVar, Type) PredType]
+filterTheta' teqClass t = go (classifyPredType t)
   where
-    go' t = do
-      teqClass <- ask classTypeEq
-      let go (EqPred _ t1 t2)
-            | Just tv <- getTyVar_maybe t1
-              = return [Left (tv, t2)]
-            | Just tv <- getTyVar_maybe t2
-              = return [Left (tv, t1)]
-            | otherwise
-              = do
-                tv1 <- newTyVar guts (typeKind t1)
-                tv2 <- newTyVar guts (typeKind t2)
-                return [Left (tv1, t1), Left (tv2, t2)]
-          go (ClassPred c ts)
-            | c == heqClass
-            , [_, _, t1, t2] <- ts
-              = go (EqPred ReprEq t1 t2) 
-            | c == teqClass
-            , [_, t1, t2] <- ts
-              = go (EqPred ReprEq t1 t2)
-            | otherwise
-              = return [Right t]  
-          go _ = return [Right t]
-      go (classifyPredType t)
+    go (EqPred _ t1 t2)
+      | Just tv <- getTyVar_maybe t1
+        = return [Left (tv, t2)]
+      | Just tv <- getTyVar_maybe t2
+        = return [Left (tv, t1)]
+      | otherwise
+        = do
+        tv1 <- newTyVar (typeKind t1)
+        tv2 <- newTyVar (typeKind t2)
+        return [Left (tv1, t1), Left (tv2, t2)]
+    go (ClassPred c ts)
+      | c == heqClass
+      , [_, _, t1, t2] <- ts
+        = go (EqPred ReprEq t1 t2) 
+      | c == teqClass
+      , [_, t1, t2] <- ts
+        = go (EqPred ReprEq t1 t2)
+      | otherwise
+        = return [Right t]  
+    go _ = return [Right t]
+
       
 
 instance Outputable ClassATItem where
@@ -624,14 +630,16 @@ expandOpenFamily guts fTyCon fTyArgs = do
 
 
 -- | Generate new unique type variable 
-newTyVar :: ModGuts -> Kind -> CorePluginM TyVar
-newTyVar guts k = flip mkTyVar k <$> newName guts tvName "gen"
+newTyVar :: Kind -> CorePluginM TyVar
+newTyVar k = flip mkTyVar k <$> newName tvName "gen"
 
 -- | Generate new unique name
-newName :: ModGuts -> NameSpace -> String -> CorePluginM Name
-newName guts nspace nameStr = do
+newName :: NameSpace -> String -> CorePluginM Name
+newName nspace nameStr = do
+    md <- liftCoreM getModule
+    loc <- liftCoreM getSrcSpanM
     u <- getUniqueM
-    return $ mkExternalName u (mg_module guts) occname (mg_loc guts)
+    return $ mkExternalName u md occname loc
   where
     occname = mkOccName nspace nameStr
       
