@@ -363,6 +363,33 @@ lookupDeriveContextInstances guts tyCon = do
       _           -> False
 
 
+-- | Result of base type lookup, matching, and expanding
+data MatchingType
+  = MatchingType
+  { mtCtxEqs      :: [(TyVar, Type)]
+    -- ^ Current list of constraints that I may want to process
+    --   during type expansion or substitution
+  , mtTheta       :: ThetaType
+    -- ^ Irreducible constraints (I can prepend them in the class instance declarations)
+  , mtOverlapMode :: OverlapMode
+    -- ^ How to declare a class instance
+  , mtBaseType    :: Type
+    -- ^ The type behind the newtype wrapper
+  , mtNewType     :: Type
+    -- ^ The newtype with instantiated type arguments
+  }
+
+instance Outputable MatchingType where
+  ppr MatchingType {..} = vcat
+    [ "MatchingType"
+    , "{ mtCtxEqs      = " GhcPlugins.<> ppr mtCtxEqs
+    , ", mtTheta       = " GhcPlugins.<> ppr mtTheta
+    , ", mtOverlapMode = " GhcPlugins.<> text (show mtOverlapMode)
+    , ", mtBaseType    = " GhcPlugins.<> ppr mtBaseType
+    , ", mtNewType     = " GhcPlugins.<> ppr mtNewType
+    , "}"
+    ]
+
 -- | For a given type and constraints, enumerate all possible concrete types;
 --   specify overlapping mode if encountered with conflicting instances of closed type families.
 --
@@ -372,13 +399,20 @@ lookupMatchingBaseTypes :: ModGuts
                         -> TyCon
                         -> DataCon
                         -> ([TyVar], [Type], Type)
-                        -> CorePluginM [(OverlapMode, Type, Type)]
+                        -> CorePluginM [MatchingType]
 lookupMatchingBaseTypes guts tyCon dataCon (tvs, tys, constraints) = do
     ftheta <- filterTheta theta
+    let initMt = MatchingType
+          { mtCtxEqs      = fst ftheta
+          , mtTheta       = snd ftheta
+          , mtOverlapMode = NoOverlap
+          , mtBaseType    = baseType
+          , mtNewType     = newType
+          }
     pluginWarning $
       "lookupMatchingBasetypes:" $$
       hsep
-      [ ppr ftheta, "=>", ppr (baseType, newType) ]
+      [ ppr initMt ]
     return []
   where
     newType = mkTyConApp tyCon tys
@@ -464,10 +498,6 @@ filterTheta' teqClass t = go (classifyPredType t)
         = return [Right t]  
     go _ = return [Right t]
 
-      
-
-instance Outputable ClassATItem where
-  ppr _ = "ClassATItem"  
 
 {-
   Try to use equality pred types to reduce the number of type variables.
@@ -646,15 +676,16 @@ newName nspace nameStr = do
 
 
 -- TODO: simplify this further, unmess tyvar situation.
+-- TODO: prepend theta types to the instances.
 -- | For a given most concrete type, find all possible class instances.
 --   Derive them all by creating a new CoreBind with a casted type.
 --
 --   Prerequisite: in the tripple (overlapmode, baseType, newType),
 --   TyVars of the newType must be a superset of TyVars of the baseType.
 lookupMatchingInstances :: ModGuts
-                        -> (OverlapMode, Type, Type)
+                        -> MatchingType
                         -> CorePluginM [(InstEnv.ClsInst, CoreBind)]
-lookupMatchingInstances guts (overlapMode, baseType, newType) =
+lookupMatchingInstances guts MatchingType {..} =
     matchInstances <$> getUniquesM
   where
     -- lookup class instances here
@@ -679,18 +710,19 @@ lookupMatchingInstances guts (overlapMode, baseType, newType) =
       | (Any True, newTyPams) <- matchTys iTyPams
       , (_, newDFunTy) <- matchTy (idType iDFunId)
       , newDFunId <- mkExportedLocalId
-          (DFunId isNewType) newName newDFunTy
+          (DFunId isNewType) newN newDFunTy
         = Just $ mkLocalInstance
                     newDFunId
-                    (toOverlapFlag overlapMode)
+                    (toOverlapFlag mtOverlapMode)
                     iTyVars iclass newTyPams
       | otherwise
         = Nothing
       where
-        matchTy = maybeReplaceTypeOccurrences (tyCoVarsOfTypeWellScoped newType) baseType newType
+        matchTy = maybeReplaceTypeOccurrences
+          (tyCoVarsOfTypeWellScoped mtNewType) mtBaseType mtNewType
         matchTys = mapM matchTy
         isNewType = isNewTyCon (classTyCon iclass)
-        newName = mkExternalName uniq (mg_module guts)
+        newN = mkExternalName uniq (mg_module guts)
                    newOccName
                    (mg_loc guts)
         newOccName
