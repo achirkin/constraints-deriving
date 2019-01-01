@@ -484,9 +484,8 @@ filterTheta' teqClass t = go (classifyPredType t)
         = return [Left (tv, t1)]
       | otherwise
         = do
-        tv1 <- newTyVar (typeKind t1)
-        tv2 <- newTyVar (typeKind t2)
-        return [Left (tv1, t1), Left (tv2, t2)]
+        tv <- newTyVar (typeKind t1)
+        return [Left (tv, t1), Left (tv, t2)]
     go (ClassPred c ts)
       | c == heqClass
       , [_, _, t1, t2] <- ts
