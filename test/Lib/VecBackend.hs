@@ -63,6 +63,7 @@ type instance DeriveContext (VecBackend t n b) = b ~ Backend t n
 data TestData a = TData a a Int
 newtype TestNewtype t n = TestNewtypeC (Backend t n)
 newtype TestNewtype2 t n b = TestNewtype2C (Backend t n)
+type instance DeriveContext (TestNewtype2 t n b) = Backend t n ~ b
 
 {-# ANN type TestNewtype3 DeriveAll #-}
 newtype TestNewtype3 a = TestNewtype3C a
