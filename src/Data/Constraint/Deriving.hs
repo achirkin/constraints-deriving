@@ -14,28 +14,35 @@ module Data.Constraint.Deriving
   , DeriveContext
   ) where
 
-import           Class         (ClassATItem, classExtraBigSig, Class, classTyCon)
-import           CoAxiom       (coAxiomSingleBranch, CoAxBranch, Branched, CoAxiom (..), coAxBranchIncomps,
-                                coAxBranchLHS, coAxBranchRHS, coAxBranchTyVars,
-                                coAxiomBranches, fromBranches)
-import           Control.Monad (join, unless)
+import           Class               (Class, classTyCon)
+import           CoAxiom             (CoAxBranch, coAxBranchIncomps,
+                                      coAxBranchLHS, coAxBranchRHS,
+                                      coAxiomBranches, coAxiomSingleBranch,
+                                      fromBranches)
+import           Control.Arrow       (second)
+import           Data.List           (groupBy, sortOn)
+
+
 import           Control.Applicative (Alternative (..))
-import           Data.Data     (Data, typeRep)
-import           Data.IORef    (IORef, modifyIORef', newIORef, readIORef)
-import qualified Data.Kind     as Kind
-import           Data.Maybe    (catMaybes, fromMaybe, mapMaybe, maybeToList)
-import           Data.Monoid   (Any (..), First (..))
-import           Data.Proxy    (Proxy (..))
+import           Control.Monad       (join, unless)
+import           Data.Data           (Data, typeRep)
+import           Data.IORef          (IORef, modifyIORef', newIORef, readIORef)
+import qualified Data.Kind           as Kind
+import           Data.Maybe          (catMaybes, fromMaybe, mapMaybe)
+import           Data.Monoid         (Any (..), First (..))
+import           Data.Proxy          (Proxy (..))
 import qualified ErrUtils
 import qualified FamInstEnv
 import qualified Finder
-import           GhcPlugins    hiding (OverlapMode (..), overlapMode, (<>))
+import           GhcPlugins          hiding (OverlapMode (..), overlapMode,
+                                      (<>))
 import qualified GhcPlugins
 import qualified IfaceEnv
-import           InstEnv       (ClsInst, extendInstEnvList, instEnvElts,
-                                instanceDFunId, instanceHead, mkLocalInstance)
-import           MonadUtils    (MonadIO (..))
-import           Panic         (panicDoc)
+import           InstEnv             (ClsInst, extendInstEnvList, instEnvElts,
+                                      instanceDFunId, instanceHead,
+                                      mkLocalInstance)
+import           MonadUtils          (MonadIO (..))
+import           Panic               (panicDoc)
 import qualified TcRnMonad
 import qualified Unify
 
@@ -225,7 +232,7 @@ defCorePluginEnv = CorePluginEnv
         mc <- try $ lookupName m cnTypeEq >>= lookupThing >>= \case
           ATyCon tc | Just cls <- tyConClass_maybe tc
             -> return cls
-          _ -> exception 
+          _ -> exception
         saveAndReturn mc $ \a e -> e { classTypeEq = a }
     }
   where
@@ -332,10 +339,9 @@ deriveAll tyCon guts
       let tvs = tyConTyVars tc
           tys = mkTyVarTys tvs
       rhs <- ask tyEmptyConstraint
-      return (tvs, tys, rhs)
+      return (tys, rhs)
     unpackInstance i
-      = let tvs = FamInstEnv.fi_tvs i
-            tys  = case tyConAppArgs_maybe <$> FamInstEnv.fi_tys i of
+      = let tys  = case tyConAppArgs_maybe <$> FamInstEnv.fi_tys i of
               [Just ts] -> ts
               _ -> panicDoc "DeriveAll" $
                 hsep
@@ -343,7 +349,7 @@ deriveAll tyCon guts
                   , ppr i, "at"
                   , ppr $ nameSrcSpan $ getName i]
             rhs = FamInstEnv.fi_rhs i
-        in (tvs, tys, rhs)
+        in (tys, rhs)
 
 
 -- | Find all instance of a type family in scope by its TyCon.
@@ -351,7 +357,7 @@ lookupTyFamInstances :: ModGuts -> TyCon -> CorePluginM [FamInstEnv.FamInst]
 lookupTyFamInstances guts fTyCon = do
     pkgFamInstEnv <- liftCoreM getPackageFamInstEnv
     return $ FamInstEnv.lookupFamInstEnvByTyCon (pkgFamInstEnv, mg_fam_inst_env guts) fTyCon
-  
+
 -- | Find all possible instances of DeriveContext type family for a given TyCon
 lookupDeriveContextInstances :: ModGuts -> TyCon -> CorePluginM [FamInstEnv.FamInst]
 lookupDeriveContextInstances guts tyCon = do
@@ -377,6 +383,9 @@ data MatchingType
     -- ^ The type behind the newtype wrapper
   , mtNewType     :: Type
     -- ^ The newtype with instantiated type arguments
+  , mtIgnoreList  :: [Type]
+    -- ^ A list of type families I have already attempted to expand, but failed
+    --   (e.g. wired-in type families or closed families with no equations).
   }
 
 instance Outputable MatchingType where
@@ -387,20 +396,75 @@ instance Outputable MatchingType where
     , ", mtOverlapMode = " GhcPlugins.<> text (show mtOverlapMode)
     , ", mtBaseType    = " GhcPlugins.<> ppr mtBaseType
     , ", mtNewType     = " GhcPlugins.<> ppr mtNewType
+    , ", mtIgnorelist  = " GhcPlugins.<> ppr mtIgnoreList
     , "}"
     ]
+
+
+-- | Replace TyVar in all components of a MatchingType
+substMatchingType :: TCvSubst -> MatchingType -> MatchingType
+substMatchingType sub MatchingType {..} = MatchingType
+  { mtCtxEqs      = map (second $ substTyAddInScope sub) mtCtxEqs
+  , mtTheta       = map (substTyAddInScope sub) mtTheta
+  , mtOverlapMode = mtOverlapMode
+  , mtBaseType    = substTyAddInScope sub mtBaseType
+  , mtNewType     = substTyAddInScope sub mtNewType
+  , mtIgnoreList  = map (substTyAddInScope sub) mtIgnoreList
+  }
+
+replaceTyMatchingType :: Type -> Type -> MatchingType -> MatchingType
+replaceTyMatchingType oldt newt MatchingType {..} = MatchingType
+  { mtCtxEqs      = map (second rep) mtCtxEqs
+  , mtTheta       = map rep mtTheta
+  , mtOverlapMode = mtOverlapMode
+  , mtBaseType    = rep mtBaseType
+  , mtNewType     = rep mtNewType
+  , mtIgnoreList  = map rep mtIgnoreList
+  }
+  where
+    rep = replaceTypeOccurrences oldt newt
+
+-- | try to get rid of mtCtxEqs by replacing tyvars by rhs in all components of the MatchingType
+cleanupMatchingType :: MatchingType -> MatchingType
+cleanupMatchingType mt0 = go (groupLists $ mtCtxEqs mt0) mt0 { mtCtxEqs = []}
+  where
+    groupOn f = groupBy (\x y -> f x == f y)
+    flattenSnd []                   = []
+    flattenSnd ([]:xs)              = flattenSnd xs
+    flattenSnd ((ts@((tv,_):_)):xs) = (tv, map snd ts): flattenSnd xs
+    groupLists = flattenSnd . groupOn fst . sortOn fst
+
+
+    go :: [(TyVar, [Type])] -> MatchingType -> MatchingType
+    go [] mt = mt
+    go ((_, []):xs) mt = go xs mt
+    -- TyVar occurs once in mtCtxEqs: I can safely replace it in the type.
+    go ((tv,[ty]):xs) mt
+      = let sub = extendTCvSubst emptyTCvSubst tv ty
+        in go (map (second (map $ substTyAddInScope sub)) xs) $ substMatchingType sub mt
+    -- TyVar occurs more than once: it may indicate a trivial substition or contradiction
+    go ((tv, tys):xs) mt
+      = case removeEqualTypes tys of
+          []  -> go xs mt -- redundant, but compiler is happy
+          [t] -> go ((tv, [t]):xs) mt
+          ts  -> go xs mt { mtCtxEqs = mtCtxEqs mt ++ map ((,) tv) ts }
+
+    removeEqualTypes [] = []
+    removeEqualTypes [t] = [t]
+    removeEqualTypes (t:ts)
+      | any (eqType t) ts = removeEqualTypes ts
+      | otherwise         = t : removeEqualTypes ts
+
 
 -- | For a given type and constraints, enumerate all possible concrete types;
 --   specify overlapping mode if encountered with conflicting instances of closed type families.
 --
---   returns: (overlap mode, basetype, newtype);
---            the TyVars of the newtype are a superset of the TyVars of the basetype.
 lookupMatchingBaseTypes :: ModGuts
                         -> TyCon
                         -> DataCon
-                        -> ([TyVar], [Type], Type)
+                        -> ([Type], Type)
                         -> CorePluginM [MatchingType]
-lookupMatchingBaseTypes guts tyCon dataCon (tvs, tys, constraints) = do
+lookupMatchingBaseTypes guts tyCon dataCon (tys, constraints) = do
     ftheta <- filterTheta theta
     let initMt = MatchingType
           { mtCtxEqs      = fst ftheta
@@ -408,13 +472,20 @@ lookupMatchingBaseTypes guts tyCon dataCon (tvs, tys, constraints) = do
           , mtOverlapMode = NoOverlap
           , mtBaseType    = baseType
           , mtNewType     = newType
+          , mtIgnoreList  = []
           }
+    mts <- map cleanupMatchingType . take 1000
+        <$> go (cleanupMatchingType initMt)
     pluginWarning $
       "lookupMatchingBasetypes:" $$
-      hsep
-      [ ppr initMt ]
-    return []
+      ppr mts
+    return mts
   where
+    go :: MatchingType -> CorePluginM [MatchingType]
+    go mt = expandOneFamily guts mt >>= \case
+      Nothing  -> pure [mt]
+      Just mts -> join <$> traverse go mts
+
     newType = mkTyConApp tyCon tys
               -- mkFunTys theta $ mkTyConApp tyCon tys
     theta = splitCts constraints ++ dataConstraints
@@ -440,7 +511,7 @@ lookupMatchingBaseTypes guts tyCon dataCon (tvs, tys, constraints) = do
 
 
   Split ThetaType into two lists:
-  
+
   [(TyVar, Type)] and the rest of ThetaType
 
   The rest of ThetaType is considered not useful;
@@ -458,7 +529,7 @@ lookupMatchingBaseTypes guts tyCon dataCon (tvs, tys, constraints) = do
   Actions [1,2] may lead to an infinite expansion (recursive families), so I need to bound the number of
   iterations. An approximate implementation plan:
   1. Apply [1] until no type families present in the basetype or the newtype
-  2. Apply [2] or [3] until no esq left??? 
+  2. Apply [2] or [3] until no esq left???
 
  -}
 
@@ -489,37 +560,41 @@ filterTheta' teqClass t = go (classifyPredType t)
     go (ClassPred c ts)
       | c == heqClass
       , [_, _, t1, t2] <- ts
-        = go (EqPred ReprEq t1 t2) 
+        = go (EqPred ReprEq t1 t2)
       | c == teqClass
       , [_, t1, t2] <- ts
         = go (EqPred ReprEq t1 t2)
       | otherwise
-        = return [Right t]  
+        = return [Right t]
     go _ = return [Right t]
 
-
-{-
-  Try to use equality pred types to reduce the number of type variables.
-  Ignore non-equality constraints.
-  If lhs and rhs are both type variables, then replace lhs with rhs.
-  Otherwise, replace bare type vars with more complicated types (i.e. "expand" vars)
- -}
-trySimplifyType :: PredType -> Type -> (Any, Type)
-trySimplifyType pt t = case classifyPredType pt of
-    EqPred _ t1 t2 -> go t1 t2
-    _ -> (Any False, t)
+expandOneFamily :: ModGuts -> MatchingType -> CorePluginM (Maybe [MatchingType])
+expandOneFamily guts mt@MatchingType{..} = case mfam of
+    Nothing      -> return Nothing
+    Just (ff, t) ->
+      expandFamily guts ff t >>= \case
+        Nothing -> return $ Just [mt { mtIgnoreList = t : mtIgnoreList }]
+        Just es -> return $ Just $ map (toMT t) es
   where
-    go t1 t2
-      | Just tv <- getTyVar_maybe t1
-      , subst <- extendTCvSubst emptyTCvSubst tv t2
-      , t' <- substTyAddInScope subst t
-        = (Any (eqType t t'), t')
-      | isTyVarTy t2
-        = go t2 t1
-      | otherwise
-        = (Any False, t)
+    -- first, substitute all type variables,
+    -- then substitute family occurrence with RHS of the axiom (rezt)
+    toMT ft (omode, rezt, subst)
+      = let famOcc = substTyAddInScope subst ft
+            newMt  = substMatchingType subst mt
+        in replaceTyMatchingType famOcc rezt newMt
+            { mtOverlapMode = omode
+            }
 
-      
+
+    -- Lookup through all components
+    look = First . lookupFamily mtIgnoreList
+    First mfam = mconcat
+      [ foldMap (look . snd) mtCtxEqs
+      , foldMap look mtTheta
+      , look mtBaseType
+      , look mtNewType
+      ]
+
 
 -- -- TODO: Not sure if I need it at all; most of the API functions look through synonyms
 -- -- | Try to remove all occurrences of type synonyms.
@@ -542,56 +617,27 @@ trySimplifyType pt t = case classifyPredType pt of
 --       Just y  -> stripOuter y
 --     t = stripOuter t'
 
--- | Find all occurrences of type or data families in the type signature;
---   group them by TyCons.
---
---   Prerequisite: the type must be free of type synonyms (output of clearSynonyms).
-lookupFamilies :: Type -> FoundFamilies
-lookupFamilies t
-      -- split type constructors
-    | Just (tyCon, tys) <- splitTyConApp_maybe t
-      = case famTyConFlav_maybe tyCon of
-          Nothing -> foldr mergeFFams emptyUFM $ map lookupFamilies tys
-          Just ff -> unitUFM tyCon (ff, [t])
-      -- split foralls
-    | ((_:_), t') <- splitPiTys t
-      = lookupFamilies t'
-      -- split arrow types
-    | Just (at, rt) <- splitFunTy_maybe t
-      = lookupFamilies at `mergeFFams` lookupFamilies rt
-    | otherwise
-      = emptyUFM
 
 -- | Depth-first lookup of the first occurrence of any type family.
-lookupFamily :: Type -> Maybe (FamTyConFlav, Type)
-lookupFamily t 
+--   First argument is a list of types to ignore.
+lookupFamily :: [Type] -> Type -> Maybe (FamTyConFlav, Type)
+lookupFamily ignoreLst t
       -- split type constructors
     | Just (tyCon, tys) <- splitTyConApp_maybe t
-      = case foldMap (First . lookupFamily) tys of
+      = case foldMap (First . lookupFamily ignoreLst) tys of
           First (Just r) -> Just r
-          First Nothing  -> flip (,) t <$> famTyConFlav_maybe tyCon
+          First Nothing  -> famTyConFlav_maybe tyCon >>= \ff ->
+            if any (eqType t) ignoreLst
+            then Nothing
+            else Just (ff, t)
       -- split foralls
     | ((_:_), t') <- splitPiTys t
-      = lookupFamily t'
+      = lookupFamily ignoreLst t'
       -- split arrow types
     | Just (at, rt) <- splitFunTy_maybe t
-      = lookupFamily at <|> lookupFamily rt
+      = lookupFamily ignoreLst at <|> lookupFamily ignoreLst rt
     | otherwise
       = Nothing
-
-
-type FoundFamilies = UniqFM (FamTyConFlav, [Type])
-
-mergeFFams :: FoundFamilies -> FoundFamilies -> FoundFamilies
-mergeFFams = plusUFM_C (\(ff,  x) (_,  y) -> (ff, combineLists x y))
-  where
-    combineLists []     ys = ys
-    combineLists (x:xs) ys = combineLists xs (addToList x ys)
-    addToList x [] = [x]
-    addToList x (y:ys)
-      | eqType x y = y:ys
-      | otherwise             = y:addToList x ys
-
 
 
 -- | Enumerate available family instances and substitute type arguments,
@@ -600,7 +646,7 @@ mergeFFams = plusUFM_C (\(ff,  x) (_,  y) -> (ff, combineLists x y))
 --   The substituted Type may have TyVars from the result set of the substitution,
 --   thus I must be careful with using it:
 --     either somehow substitute back these tyvars from the result,
---     or substitute the whole type that contains this family occurrence. 
+--     or substitute the whole type that contains this family occurrence.
 --
 --   return Nothing   means cannot expand family (shall use it as-is);
 --   return (Just []) means all instances contradict family arguments.
@@ -616,7 +662,14 @@ expandFamily _ BuiltInSynFamTyCon{}           _ = pure Nothing
 expandFamily _ (ClosedSynFamilyTyCon Nothing) _ = pure Nothing
 -- For a closed type family, equations are accessible right there
 expandFamily _ (ClosedSynFamilyTyCon (Just coax)) ft
-  = pure $ withFamily ft Nothing $ const $ expandClosedFamily (fromBranches $ coAxiomBranches coax)
+    = pure $ withFamily ft Nothing $ const $ expandClosedFamily os bcs
+  where
+    bcs = fromBranches $ coAxiomBranches coax
+    os  = if any (not . null . coAxBranchIncomps) bcs
+          then map overlap bcs else repeat NoOverlap
+    overlap cb = if null $ coAxBranchIncomps cb
+          then Overlapping
+          else Incoherent
 -- For a data family or an open type family, I need to lookup instances
 -- in the family instance environment.
 expandFamily guts DataFamilyTyCon{} ft
@@ -626,23 +679,21 @@ expandFamily guts OpenSynFamilyTyCon ft
 
 withFamily :: Type -> a -> (TyCon -> [Type] -> a) -> a
 withFamily ft def f = case splitTyConApp_maybe ft of
-  Nothing -> def
+  Nothing       -> def
   Just (tc, ts) -> f tc ts
 
 
 -- | The same as `expandFamily`, but I know already that the family is closed.
-expandClosedFamily :: [CoAxBranch] -> [Type] -> Maybe [(OverlapMode, Type, TCvSubst)]
+expandClosedFamily :: [OverlapMode]
+                   -> [CoAxBranch]
+                   -> [Type] -> Maybe [(OverlapMode, Type, TCvSubst)]
 -- empty type family -- leave it as-is
-expandClosedFamily [] _ = Nothing
-expandClosedFamily bs fTyArgs = Just $ mapMaybe go bs
+expandClosedFamily _ [] _ = Nothing
+expandClosedFamily os bs fTyArgs = Just $ mapMaybe go $ zip os bs
   where
     -- I've decided to use tcMatchTyKis, which means matching Kinds too,
     -- though I may discover later should I change it to tcMatchTys.
-    go cb = (,,) (overlap cb) (coAxBranchRHS cb) <$> Unify.tcMatchTyKis fTyArgs (coAxBranchLHS cb) 
-
-    overlap cb = if null $ coAxBranchIncomps cb
-                 then Overlapping
-                 else Incoherent
+    go (om, cb) = (,,) om (coAxBranchRHS cb) <$> Unify.tcMatchTyKis fTyArgs (coAxBranchLHS cb)
 
 
 -- | The same as `expandFamily`, but I know already that the family is open.
@@ -655,10 +706,13 @@ expandOpenFamily guts fTyCon fTyArgs = do
   return $
     if null tfInsts
     then Just [] -- No mercy
-    else expandClosedFamily (coAxiomSingleBranch . FamInstEnv.famInstAxiom <$> tfInsts)  fTyArgs
+    else expandClosedFamily
+           (repeat NoOverlap)
+           (coAxiomSingleBranch . FamInstEnv.famInstAxiom <$> tfInsts)
+           fTyArgs
 
 
--- | Generate new unique type variable 
+-- | Generate new unique type variable
 newTyVar :: Kind -> CorePluginM TyVar
 newTyVar k = flip mkTyVar k <$> newName tvName "gen"
 
@@ -671,11 +725,8 @@ newName nspace nameStr = do
     return $ mkExternalName u md occname loc
   where
     occname = mkOccName nspace nameStr
-      
 
 
--- TODO: simplify this further, unmess tyvar situation.
--- TODO: prepend theta types to the instances.
 -- | For a given most concrete type, find all possible class instances.
 --   Derive them all by creating a new CoreBind with a casted type.
 --
@@ -684,160 +735,53 @@ newName nspace nameStr = do
 lookupMatchingInstances :: ModGuts
                         -> MatchingType
                         -> CorePluginM [(InstEnv.ClsInst, CoreBind)]
-lookupMatchingInstances guts MatchingType {..} =
-    matchInstances <$> getUniquesM
+lookupMatchingInstances guts mt = go . instEnvElts $ mg_inst_env guts
   where
-    -- lookup class instances here
-    instances = instEnvElts $ mg_inst_env guts
+    go [] = return []
+    go (i:is) = matchInstance mt i >>= \case
+      Nothing -> go is
+      Just ni -> ((ni, mkBind (instanceDFunId i) ni):) <$> go is
 
-    matchInstances :: [Unique] -> [(InstEnv.ClsInst, CoreBind)]
-    matchInstances uniques = catMaybes $ zipWith ($)
-      [ \u -> let refId = instanceDFunId ci
-                  f i = (i, mkBind refId i)
-               in f <$> matchInstance u refId (instanceHead ci)
-      | ci <- instances
-      ] uniques
-
-    matchInstance :: Unique
-                  -> DFunId
-                  -> ([TyVar], Class, [Type])
-                  -> Maybe InstEnv.ClsInst
-    matchInstance uniq
-                  -- (overlapMode, bTyVars, bOrigT, bNewT)
-                  iDFunId
-                  (iTyVars, iclass, iTyPams)
-      | (Any True, newTyPams) <- matchTys iTyPams
-      , (_, newDFunTy) <- matchTy (idType iDFunId)
-      , newDFunId <- mkExportedLocalId
-          (DFunId isNewType) newN newDFunTy
-        = Just $ mkLocalInstance
-                    newDFunId
-                    (toOverlapFlag mtOverlapMode)
-                    iTyVars iclass newTyPams
-      | otherwise
-        = Nothing
+    -- Create a new DFunId by casting
+    -- the original DFunId to a required type
+    mkBind :: DFunId -> InstEnv.ClsInst -> CoreBind
+    mkBind oldId newInst
+        = NonRec newId
+        $ mkCast (Var oldId)
+        $ mkUnsafeCo Representational (idType oldId) (idType newId)
       where
-        matchTy = maybeReplaceTypeOccurrences
+        newId = instanceDFunId newInst
+
+-- | TODO: shall I add theta types? Would need to modify the core expression
+matchInstance :: MatchingType
+              -> InstEnv.ClsInst
+              -> CorePluginM (Maybe InstEnv.ClsInst)
+matchInstance MatchingType {..} baseInst
+    | (Any True, newTyPams) <- matchTys iTyPams
+    , (_, newDFunTy) <- matchTy (idType baseDFunId)
+      = do
+      newN <- newName (occNameSpace baseDFunName)
+        $ occNameString baseDFunName ++ newtypeNameS
+      let newDFunId = mkExportedLocalId
+            (DFunId isNewType) newN newDFunTy
+      return . Just $ mkLocalInstance
+                        newDFunId
+                        (toOverlapFlag mtOverlapMode)
+                        iTyVars iClass newTyPams
+    | otherwise
+      = pure Nothing
+  where
+    baseDFunId = instanceDFunId baseInst
+    (iTyVars, iClass, iTyPams) = instanceHead baseInst
+    matchTy = maybeReplaceTypeOccurrences
           (tyCoVarsOfTypeWellScoped mtNewType) mtBaseType mtNewType
-        matchTys = mapM matchTy
-        isNewType = isNewTyCon (classTyCon iclass)
-        newN = mkExternalName uniq (mg_module guts)
-                   newOccName
-                   (mg_loc guts)
-        newOccName
-          = let oname = occName (idName $ iDFunId)
-             in mkOccName (occNameSpace oname)
-                          (occNameString oname ++ "VecBackend")
+    matchTys = mapM matchTy
+    isNewType = isNewTyCon (classTyCon iClass)
+    baseDFunName = occName . idName $ baseDFunId
+    newtypeNameS = case tyConAppTyCon_maybe mtNewType of
+      Nothing -> "DeriveAll-generated"
+      Just tc -> occNameString $ occName $ tyConName tc
 
-    -- Create a new DFunId by casting
-    -- the original DFunId to a required type
-    mkBind :: DFunId -> InstEnv.ClsInst -> CoreBind
-    mkBind oldId newInst
-        = NonRec newId
-        $ Cast (Var oldId)
-        $ mkUnsafeCo Representational (idType oldId) (idType newId)
-      where
-        newId = instanceDFunId newInst
-
-
-
-deriveAllInstances'  :: CoAxiom Branched -> ModGuts -> CorePluginM ModGuts
-deriveAllInstances' backendFamily  guts = do
-
-    matchedInstances <- matchInstances <$> getUniquesM
-    -- mapM_ (putMsg . ppr) typeMaps
-    -- mapM_ (putMsg . ppr) matchedInstances
-    --
-    -- mapM_ (\b -> putMsg (ppr b) >> putMsg "------") $ mg_binds guts
-
-    return guts
-      { mg_insts = map snd matchedInstances ++ mg_insts guts
-      , mg_inst_env = extendInstEnvList (mg_inst_env guts)
-                    $ map snd matchedInstances
-      , mg_binds = map fst matchedInstances ++ mg_binds guts
-      }
-  where
-
-    -- backends for which I derive class instances
-    backendInstances = fromBranches $ coAxiomBranches backendFamily
-
-    -- list of backends with overlapping mods:
-    --  just substitute class instances and we are done.
-    typeMaps :: [(OverlapMode, [TyVar], Type, Type)]
-    typeMaps = map mapBackend backendInstances
-      where
-        mapBackend coaxb = ( overlap coaxb
-                           , coAxBranchTyVars coaxb
-                           , coAxBranchRHS coaxb
-                           , mkTyConApp dfBackendTyCon
-                               $ coAxBranchLHS coaxb ++ [coAxBranchRHS coaxb]
-                           )
-        overlap coaxb = if null $ coAxBranchIncomps coaxb
-                        then Overlapping
-                        else Incoherent
-
-    -- lookup class instances here
-    instances = instEnvElts $ mg_inst_env guts
-
-    -- DFbackend type constructor is supposed to be defined in this module
-    dfBackendTyCon
-      = let checkDfBackendTyCon tc
-                = if occName (tyConName tc) == mkTcOcc "VecBackend"
-                  then First $ Just tc
-                  else First Nothing
-         in fromMaybe (
-               panicDoc "Data.Constraint.Deriving"
-                        "Could not find VecBackend type constructor"
-            ) . getFirst $ foldMap checkDfBackendTyCon $ mg_tcs guts
-
-    matchInstances uniques = catMaybes $ zipWith ($)
-      [ \u -> let refId = instanceDFunId ci
-                  f i = (mkBind refId i, i)
-               in f <$> matchInstance u tm refId (instanceHead ci)
-      | tm <- typeMaps
-      , ci <- instances
-      ] uniques
-
-    matchInstance :: Unique
-                  -> (OverlapMode, [TyVar], Type, Type)
-                  -> DFunId
-                  -> ([TyVar], Class, [Type])
-                  -> Maybe InstEnv.ClsInst
-    matchInstance uniq
-                  (overlapMode, bTyVars, bOrigT, bNewT)
-                  iDFunId
-                  (iTyVars, iclass, iTyPams)
-      | (Any True, newTyPams) <- matchTys iTyPams
-      , (_, newDFunTy) <- matchTy (idType iDFunId)
-      , newDFunId <- mkExportedLocalId
-          (DFunId isNewType) newName newDFunTy
-        = Just $ mkLocalInstance
-                    newDFunId
-                    (toOverlapFlag overlapMode)
-                    iTyVars iclass newTyPams
-      | otherwise
-        = Nothing
-      where
-        matchTy = maybeReplaceTypeOccurrences bTyVars bOrigT bNewT
-        matchTys = mapM matchTy
-        isNewType = isNewTyCon (classTyCon iclass)
-        newName = mkExternalName uniq (mg_module guts)
-                   newOccName
-                   (mg_loc guts)
-        newOccName
-          = let oname = occName (idName $ iDFunId)
-             in mkOccName (occNameSpace oname)
-                          (occNameString oname ++ "VecBackend")
-
-    -- Create a new DFunId by casting
-    -- the original DFunId to a required type
-    mkBind :: DFunId -> InstEnv.ClsInst -> CoreBind
-    mkBind oldId newInst
-        = NonRec newId
-        $ Cast (Var oldId)
-        $ mkUnsafeCo Representational (idType oldId) (idType newId)
-      where
-        newId = instanceDFunId newInst
 
 
 toInstance :: ModGuts -> CorePluginM ModGuts
@@ -1040,27 +984,27 @@ vnDictToBare = mkVarOcc "dictToBare"
 cnTypeEq :: OccName
 cnTypeEq = mkTcOcc "~"
 
--- -- | Replace all occurrences of one type in another.
--- replaceTypeOccurrences :: Type -> Type -> Type -> Type
--- replaceTypeOccurrences told tnew = replace
---   where
---     replace :: Type -> Type
---     replace t
---         -- found occurrence
---       | eqType t told
---         = tnew
---         -- split type constructors
---       | Just (tyCon, tys) <- splitTyConApp_maybe t
---         = mkTyConApp tyCon $ map replace tys
---         -- split foralls
---       | (bndrs@(_:_), t') <- splitPiTys t
---         = mkPiTys bndrs $ replace t'
---         -- split arrow types
---       | Just (at, rt) <- splitFunTy_maybe t
---         = mkFunTy (replace at) (replace rt)
---         -- could not find anything
---       | otherwise
---         = t
+-- | Replace all occurrences of one type in another.
+replaceTypeOccurrences :: Type -> Type -> Type -> Type
+replaceTypeOccurrences told tnew = replace
+  where
+    replace :: Type -> Type
+    replace t
+        -- found occurrence
+      | eqType t told
+        = tnew
+        -- split type constructors
+      | Just (tyCon, tys) <- splitTyConApp_maybe t
+        = mkTyConApp tyCon $ map replace tys
+        -- split foralls
+      | (bndrs@(_:_), t') <- splitPiTys t
+        = mkPiTys bndrs $ replace t'
+        -- split arrow types
+      | Just (at, rt) <- splitFunTy_maybe t
+        = mkFunTy (replace at) (replace rt)
+        -- could not find anything
+      | otherwise
+        = t
 
 toOverlapFlag :: OverlapMode -> OverlapFlag
 toOverlapFlag m = OverlapFlag (getOMode m) False
