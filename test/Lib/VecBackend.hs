@@ -97,37 +97,39 @@ type instance TestTF t n = TestNewtype t n
 --   bSing = unsafeCoerce# (bSing :: BackendSing (DataFrame t n))
 --   {-# INLINE bSing #-}
 
+-- invalid annotation for testing purposes
+{-# ANN type TestTF (ToInstance NoOverlap) #-}
 
 {-# ANN inferEq (ToInstance Overlappable) #-}
-inferEq :: forall t n b . ( KnownBackend b, Eq t) => BareConstraint (Eq (VecBackend t n b))
+inferEq :: forall t n b . ( KnownBackend b, Eq t) => Dict (Eq (VecBackend t n b))
 inferEq = case inferBase @t @n @b undefined of
-  Dict -> toVecBackend @Eq @t @n @b $ inferBackendInstance
+  Dict -> DictValue $ toVecBackend @Eq @t @n @b $ inferBackendInstance
 
 {-# ANN inferShow (ToInstance Overlappable) #-}
 inferShow :: forall t n b . ( KnownBackend b, Show t)
-          => BareConstraint (Show (VecBackend t n b))
+          => Dict (Show (VecBackend t n b))
 inferShow = case inferBase @t @n @b undefined of
-  Dict -> toVecBackend @Show @t @n @b $ inferBackendInstance
+  Dict -> DictValue $ toVecBackend @Show @t @n @b $ inferBackendInstance
 
 
 {-# ANN inferOrd (ToInstance Overlappable) #-}
 inferOrd :: forall t n b . ( KnownBackend b, Ord t)
-          => BareConstraint (Ord (VecBackend t n b))
+          => Dict (Ord (VecBackend t n b))
 inferOrd = case inferBase @t @n @b undefined of
-  Dict -> toVecBackend @Ord @t @n @b $ inferBackendInstance
+  Dict -> DictValue $ toVecBackend @Ord @t @n @b $ inferBackendInstance
 
 {-# ANN inferSemigroup (ToInstance Overlappable) #-}
 inferSemigroup :: forall t n b . ( KnownBackend b, Num t)
-          => BareConstraint (Semigroup (VecBackend t n b))
+          => Dict (Semigroup (VecBackend t n b))
 inferSemigroup = case inferBase @t @n @b undefined of
-  Dict -> toVecBackend @Semigroup @t @n @b $ inferBackendInstance
+  Dict -> DictValue $ toVecBackend @Semigroup @t @n @b $ inferBackendInstance
 
 
 {-# ANN inferMonoid (ToInstance Overlappable) #-}
 inferMonoid :: forall t n b . ( KnownBackend b, Num t, KnownNat n)
-          => BareConstraint (Monoid (VecBackend t n b))
+          => Dict (Monoid (VecBackend t n b))
 inferMonoid = case inferBase @t @n @b undefined of
-  Dict -> toVecBackend @Monoid @t @n @b $ inferBackendInstance
+  Dict -> DictValue $ toVecBackend @Monoid @t @n @b $ inferBackendInstance
 
 
 

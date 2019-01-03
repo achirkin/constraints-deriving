@@ -14,21 +14,20 @@ module Data.Constraint.Deriving
   , DeriveContext
   ) where
 
+import qualified Avail
 import           Class               (Class, classTyCon)
 import           CoAxiom             (CoAxBranch, coAxBranchIncomps,
                                       coAxBranchLHS, coAxBranchRHS,
                                       coAxiomBranches, coAxiomSingleBranch,
                                       fromBranches)
-import           Control.Arrow       (second)
-import           Data.List           (groupBy, sortOn)
-
-
 import           Control.Applicative (Alternative (..))
+import           Control.Arrow       (second)
 import           Control.Monad       (join, unless)
 import           Data.Data           (Data, typeRep)
 import           Data.IORef          (IORef, modifyIORef', newIORef, readIORef)
 import qualified Data.Kind           as Kind
-import           Data.Maybe          (catMaybes, fromMaybe, mapMaybe)
+import           Data.List           (groupBy, sortOn)
+import           Data.Maybe          (fromMaybe, isJust, mapMaybe)
 import           Data.Monoid         (Any (..), First (..))
 import           Data.Proxy          (Proxy (..))
 import qualified ErrUtils
@@ -38,9 +37,8 @@ import           GhcPlugins          hiding (OverlapMode (..), overlapMode,
                                       (<>))
 import qualified GhcPlugins
 import qualified IfaceEnv
-import           InstEnv             (ClsInst, extendInstEnvList, instEnvElts,
-                                      instanceDFunId, instanceHead,
-                                      mkLocalInstance)
+import qualified InstEnv
+import qualified Kind
 import           MonadUtils          (MonadIO (..))
 import           Panic               (panicDoc)
 import qualified TcRnMonad
@@ -110,7 +108,7 @@ install _ todo = do
   return ( CoreDoPluginPass "Data.Constraint.Deriving.DeriveAll"
              (\x -> fromMaybe x <$> runCorePluginM (deriveAllPass x) eref)
          : CoreDoPluginPass "Data.Constraint.Deriving.ToInstance"
-             (\x -> fromMaybe x <$> runCorePluginM (toInstance x) eref)
+             (\x -> fromMaybe x <$> runCorePluginM (toInstancePass x) eref)
          : todo)
 
 
@@ -293,7 +291,7 @@ deriveAllPass gs = go (mg_tcs gs) annotateds gs
       -- add new definitions and continue
       go xs (delFromUFM anns x) guts
         { mg_insts    = newInstances ++ mg_insts guts
-        , mg_inst_env = extendInstEnvList (mg_inst_env guts) newInstances
+        , mg_inst_env = InstEnv.extendInstEnvList (mg_inst_env guts) newInstances
         , mg_binds    = newBinds ++ mg_binds guts
         }
 
@@ -301,7 +299,7 @@ deriveAllPass gs = go (mg_tcs gs) annotateds gs
     go (_:xs) anns guts = go xs anns guts
 
     pprBulletNameLoc n = hsep
-      [bullet, ppr $ occName n, ppr $ nameSrcSpan n]
+      [" ", bullet, ppr $ occName n, ppr $ nameSrcSpan n]
 
 
 
@@ -312,7 +310,7 @@ deriveAllPass gs = go (mg_tcs gs) annotateds gs
   Then, enumerate specific type instances (based on constraints and type families in the newtype def.)
   Then, lookup all class instances for the found type instances.
  -}
-deriveAll :: TyCon -> ModGuts -> CorePluginM [(ClsInst, CoreBind)]
+deriveAll :: TyCon -> ModGuts -> CorePluginM [(InstEnv.ClsInst, CoreBind)]
 deriveAll tyCon guts
 -- match good newtypes only
   | True <- isNewTyCon tyCon
@@ -474,11 +472,8 @@ lookupMatchingBaseTypes guts tyCon dataCon (tys, constraints) = do
           , mtNewType     = newType
           , mtIgnoreList  = []
           }
-    mts <- map cleanupMatchingType . take 1000
+    mts <- map cleanupMatchingType . take 1000 -- TODO: improve the logic and the termination rule
         <$> go (cleanupMatchingType initMt)
-    pluginWarning $
-      "lookupMatchingBasetypes:" $$
-      ppr mts
     return mts
   where
     go :: MatchingType -> CorePluginM [MatchingType]
@@ -735,12 +730,12 @@ newName nspace nameStr = do
 lookupMatchingInstances :: ModGuts
                         -> MatchingType
                         -> CorePluginM [(InstEnv.ClsInst, CoreBind)]
-lookupMatchingInstances guts mt = go . instEnvElts $ mg_inst_env guts
+lookupMatchingInstances guts mt = go . InstEnv.instEnvElts $ mg_inst_env guts
   where
     go [] = return []
     go (i:is) = matchInstance mt i >>= \case
       Nothing -> go is
-      Just ni -> ((ni, mkBind (instanceDFunId i) ni):) <$> go is
+      Just ni -> ((ni, mkBind (InstEnv.instanceDFunId i) ni):) <$> go is
 
     -- Create a new DFunId by casting
     -- the original DFunId to a required type
@@ -750,7 +745,7 @@ lookupMatchingInstances guts mt = go . instEnvElts $ mg_inst_env guts
         $ mkCast (Var oldId)
         $ mkUnsafeCo Representational (idType oldId) (idType newId)
       where
-        newId = instanceDFunId newInst
+        newId = InstEnv.instanceDFunId newInst
 
 -- | TODO: shall I add theta types? Would need to modify the core expression
 matchInstance :: MatchingType
@@ -764,15 +759,15 @@ matchInstance MatchingType {..} baseInst
         $ occNameString baseDFunName ++ newtypeNameS
       let newDFunId = mkExportedLocalId
             (DFunId isNewType) newN newDFunTy
-      return . Just $ mkLocalInstance
+      return . Just $ InstEnv.mkLocalInstance
                         newDFunId
                         (toOverlapFlag mtOverlapMode)
                         iTyVars iClass newTyPams
     | otherwise
       = pure Nothing
   where
-    baseDFunId = instanceDFunId baseInst
-    (iTyVars, iClass, iTyPams) = instanceHead baseInst
+    baseDFunId = InstEnv.instanceDFunId baseInst
+    (iTyVars, iClass, iTyPams) = InstEnv.instanceHead baseInst
     matchTy = maybeReplaceTypeOccurrences
           (tyCoVarsOfTypeWellScoped mtNewType) mtBaseType mtNewType
     matchTys = mapM matchTy
@@ -783,79 +778,193 @@ matchInstance MatchingType {..} baseInst
       Just tc -> occNameString $ occName $ tyConName tc
 
 
-
-toInstance :: ModGuts -> CorePluginM ModGuts
-toInstance guts = do
-  bc <- ask tyConBareConstraint
-  toInstance' bc guts
-
-toInstance' :: TyCon -> ModGuts -> CorePluginM ModGuts
-toInstance' bareConstraintTc guts = do
-
-    -- mapM_ (putMsg . ppr) $ mg_anns guts
-
-    let (newInsts, parsedBinds) = mapM toInst $ mg_binds guts
-
-    return guts
-      { mg_insts = newInsts ++ mg_insts guts
-      , mg_inst_env = extendInstEnvList (mg_inst_env guts)
-                    $ newInsts
-      , mg_binds = parsedBinds
-      }
+toInstancePass :: ModGuts -> CorePluginM ModGuts
+toInstancePass gs = go (reverse $ mg_binds gs) annotateds gs { mg_binds = []}
   where
-    aenv = mkAnnEnv $ mg_anns guts
+    annotateds :: UniqFM [(Name, ToInstance)]
+    annotateds = getModuleAnns gs
 
-    getToInstanceAnns :: CoreBind -> [ToInstance]
-    getToInstanceAnns (NonRec b _)
-      = findAnns deserializeWithData aenv . NamedTarget $ varName b
-    getToInstanceAnns (Rec _)      = []
+    go :: [CoreBind] -> UniqFM [(Name, ToInstance)] -> ModGuts -> CorePluginM ModGuts
+    -- All exports are processed, just return ModGuts
+    go [] anns guts = do
+      unless (isNullUFM anns) $
+        pluginWarning $ "One or more ToInstance annotations are ignored:"
+          $+$ vcat
+            (map (pprBulletNameLoc . fst) . join $ eltsUFM anns)
+          $$ "Note possible issues:"
+          $$ pprNotes
+           [ "ToInstance is meant to be used only on bindings of type Ctx => Dict (Class t1 .. tn)."
+           , "Currently, I process non-recursive bindings only."
+           , sep
+             [ "Non-exported bindings may vanish before the plugin pass:"
+             , "make sure you export annotated definitions!"
+             ]
+           ]
+      return guts
 
-    -- Possibly transform a function into an instance,
-    -- Keep an instance declaration if succeeded.
-    toInst :: CoreBind -> ([InstEnv.ClsInst], CoreBind)
-    toInst cb@(NonRec cbVar  cbE)
-      | [omode] <- toOverlapFlag . overlapMode <$> getToInstanceAnns cb
-      , otype <- idType cbVar
-      , (First (Just (cls, tys)), ntype') <- replace otype
-      , (tvs, ntype) <- extractTyVars ntype'
-      , isNewType <- isNewTyCon (classTyCon cls)
-      , ncbVar <- flip setIdDetails (DFunId isNewType)
-                $ setIdType cbVar ntype
-       -- TODO: hmm, maybe I need to remove this id from mg_exports at least...
-       -- mkLocalInstance :: DFunId -> OverlapFlag -> [TyVar] -> Class -> [Type] -> ClsInst
-      = ([mkLocalInstance ncbVar omode tvs cls tys]
-        , NonRec ncbVar
-          $ Cast cbE $ mkUnsafeCo Representational otype ntype
-        )
-    toInst cb = ([], cb)
+    -- process type definitions present in the set of annotations
+    go (cbx@(NonRec x _):xs) anns guts
+      | Just ((xn, ti):ds) <- lookupUFM anns x = do
+      unless (null ds) $
+        pluginLocatedWarning (nameSrcSpan xn) $
+          "Ignoring redundant ToInstance annotions" $$
+          hcat
+          [ "(the plugin needs only one annotation per binding, but got "
+          , speakN (length ds + 1)
+          , ")"
+          ]
+      -- add new definitions and continue
+      try (toInstance ti cbx) >>= \case
+        Nothing
+          -> go xs (delFromUFM anns x) guts { mg_binds = cbx : mg_binds guts}
+        Just (newInstance, newBind)
+          -> go xs (delFromUFM anns x) guts
+            { mg_insts    = newInstance : mg_insts guts
+            , mg_inst_env = InstEnv.extendInstEnv (mg_inst_env guts) newInstance
+            , mg_binds    = newBind : mg_binds guts
+            , mg_exports  = Avail.filterAvails (xn /=) $ mg_exports guts
+            }
 
-    extractTyVars :: Type -> ([TyVar], Type)
-    extractTyVars t
-      | tvs <- tyCoVarsOfTypeWellScoped t
-      , bndrs <- catMaybes
-               . map (\b -> caseBinder b (Just . binderVar) (const Nothing))
-               . fst $ splitPiTys t
-      = ( tvs ++ bndrs , mkSpecForAllTys tvs t)
+    -- ignore the rest of bindings
+    go (x:xs) anns guts = go xs anns guts { mg_binds = x : mg_binds guts}
 
-    -- tyCoVarsOfTypeWellScoped
-    replace :: Type -> (First (Class, [Type]), Type)
-    replace t
-        -- split type constructors
-      | Just (tyCon, tys) <- splitTyConApp_maybe t
-        = case (tyCon == bareConstraintTc, tys) of
-            (True, [ty]) -> (First $ extractClass ty, ty)
-            _            -> mkTyConApp tyCon <$> mapM replace tys
-        -- split foralls
-      | (bndrs@(_:_), t') <- splitPiTys t
-        = mkPiTys bndrs <$> replace t'
-        -- split arrow types
-      | Just (at, rt) <- splitFunTy_maybe t
-        = mkFunTy <$> replace at <*> replace rt
-      | otherwise
-        = (First Nothing, t)
+    pprBulletNameLoc n = hsep
+      [" " , bullet, ppr $ occName n, ppr $ nameSrcSpan n]
+    pprNotes = vcat . map (\x -> hsep [" ", bullet, x])
 
-    extractClass t = splitTyConApp_maybe t
-                 >>= \(tc, ts) -> flip (,) ts <$> tyConClass_maybe tc
+-- | Transform a given CoreBind into an instance.
+--
+--   The input core bind must have type `Ctx => Dict (Class t1 .. tn)`
+--
+--   The output is `instance {-# overlapMode #-} Ctx => Class t1 ... tn`
+toInstance :: ToInstance -> CoreBind -> CorePluginM (InstEnv.ClsInst, CoreBind)
+
+toInstance _ (Rec xs) = do
+    loc <- liftCoreM getSrcSpanM
+    pluginLocatedError
+        (fromMaybe loc $ getFirst $ foldMap (First . Just . nameSrcSpan . getName . fst) xs)
+      $ "ToInstance plugin pass does not support recursive bindings"
+      $$ hsep ["(group:", pprQuotedList (map (getName . fst) xs), ")"]
+
+toInstance (ToInstance overlapMode) (NonRec bindVar bindExpr) = do
+    -- check if all type arguments are constraint arguments
+    unless (all (Kind.isConstraintKind . typeKind) theta) $
+      pluginLocatedError loc notGoodMsg
+
+    -- get necessary definitions
+    tcBareConstraint <- ask tyConBareConstraint
+    tcDict <- ask tyConDict
+    fDictToBare <- ask funDictToBare
+    varCls <- newTyVar constraintKind
+    let tyMatcher = mkTyConApp tcDict [mkTyVarTy varCls]
+
+    -- Get instance definition
+    match <- case Unify.tcMatchTy tyMatcher dictTy of
+      Nothing -> pluginLocatedError loc notGoodMsg
+      Just ma -> pure ma
+    let matchedTy = substTyVar match varCls
+        instSig = mkForAllTys bndrs $ mkFunTys theta matchedTy
+        bindBareTy = mkForAllTys bndrs $ mkFunTys theta $ mkTyConApp tcBareConstraint [matchedTy]
+
+    -- check if constraint is indeed a class and get it
+    matchedClass <- case tyConAppTyCon_maybe matchedTy >>= tyConClass_maybe of
+      Nothing -> pluginLocatedError loc notGoodMsg
+      Just cl -> pure cl
+
+    -- try to apply dictToBare to the expression of the found binding
+    newExpr <- case unwrapDictExpr dictTy fDictToBare bindExpr of
+      Nothing -> pluginLocatedError loc notGoodMsg
+      Just ex -> pure $ mkCast ex
+                      $ mkUnsafeCo Representational bindBareTy instSig
+
+
+    return $ mkNewInstance overlapMode matchedClass bindVar newExpr
+
+  where
+    origBindTy = idType bindVar
+    (bndrs, bindTy) = splitForAllTyVarBndrs origBindTy
+    (theta, dictTy) = splitFunTys bindTy
+    loc = nameSrcSpan $ getName bindVar
+    notGoodMsg =
+         "ToInstance plugin pass failed to process a Dict declaraion."
+      $$ "The declaration must have form `forall a1..an . Ctx => Dict (Cls t1..tn)'"
+      $$ "Declaration:"
+      $$ hcat
+         [ "  "
+         , ppr bindVar, " :: "
+         , ppr origBindTy
+         ]
+      $$ ""
+      $$ "Please check:"
+      $$ vcat
+       ( map (\s -> hsep  [" ", bullet, s])
+         [ "It must not have arguments (i.e. is it not a fuction, but a value);"
+         , "It must have type Dict;"
+         , "The argument of Dict must be a single class (e.g. no constraint tuples or equalities);"
+         , "It must not have implicit arguments or any other complicated things."
+         ]
+       )
+
+-- This fails if the CoreExpr type is not valid instance signature.
+mkNewInstance :: OverlapMode
+              -> Class
+              -> Id -- ^ Original core binding (with old type)
+              -> CoreExpr -- ^ implementation, with a proper new type (instance signature)
+              -> (InstEnv.ClsInst, CoreBind)
+mkNewInstance omode cls bindVar bindExpr
+    = ( InstEnv.mkLocalInstance iDFunId ioflag tvs cls tys
+      , NonRec iDFunId bindExpr)
+  where
+    ioflag  = toOverlapFlag omode
+    itype   = exprType bindExpr
+    iDFunId = flip setIdDetails (DFunId $ isNewTyCon (classTyCon cls))
+            $ setIdType bindVar itype
+    (tvs, itype') = splitForAllTys itype
+    (_, typeBody) = splitFunTys itype'
+    tys = case tyConAppArgs_maybe typeBody of
+      Nothing -> panicDoc "ToInstance" $ hsep
+        [ "Impossible happened:"
+        , "expected a class constructor in mkNewInstance, but got"
+        , ppr typeBody
+        , "at", ppr $ nameSrcSpan $ getName bindVar
+        ]
+      Just ts -> ts
+
+
+-- | Go through type applications and apply dictToBare function on `Dict c` type
+unwrapDictExpr :: Type
+                  -- ^ Dict c
+                  --
+                  --   Serves as stop test (if rhs expression matches the type)
+               -> Id
+                  -- ^ dictToBare :: forall (c :: Constraint) . Dict c -> BareConstraint c
+               -> CoreExpr
+                  -- ^ forall a1..an . (Ctx1,.. Ctxn) => Dict c
+               -> Maybe CoreExpr
+                  -- ^ forall a1..an . (Ctx1,.. Ctxn) => BareConstraint c
+unwrapDictExpr dictT unwrapFun ex = case ex of
+    Var _ -> testNWrap Nothing
+    Lit _ -> testNWrap Nothing
+    App e a -> testNWrap $       (App e <$> proceed a)
+                        <|> (flip App a <$> proceed e)
+    Lam b e -> testNWrap $ Lam b <$> proceed e
+    Let b e -> testNWrap $ Let b <$> proceed e
+    Case {} -> testNWrap Nothing
+    Cast {} -> testNWrap Nothing
+    Tick t e -> testNWrap $ Tick t <$> proceed e
+    Type {}  -> Nothing
+    Coercion {} -> Nothing
+  where
+    proceed = unwrapDictExpr dictT unwrapFun
+    testNWrap go = if testType ex then wrap ex else go
+    wrap e = flip fmap (getClsT e) $ \t -> Var unwrapFun `App` t `App` e
+    -- type variables may differ, so I need to use tcMatchTy.
+    -- I do not check if resulting substition is not trivial. Shall I?
+    testType = isJust . Unify.tcMatchTy dictT . exprType
+    getClsT e = case tyConAppArgs_maybe $ exprType e of
+      Just [t] -> Just $ Type t
+      _        -> Nothing
+
 
 
 -- | Look through the type recursively;
