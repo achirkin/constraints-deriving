@@ -3,11 +3,12 @@ version:             0.1.0.0
 github:              "achirkin/constraints-deriving"
 license:             BSD3
 author:              "Artem Chirkin"
-maintainer:          "example@example.com"
+maintainer:          "achirkin@users.noreply.github.com"
 copyright:           "Copyright: (c) 2019 Artem Chirkin"
-synopsis:            Constraint manipulation
+synopsis:            Manipulating constraints and deriving class instances programmatically.
 category:            Constraints
-description:         Please see the README on GitHub at <https://github.com/achirkin/constraints-deriving#readme>
+description:         The library provides a plugin to derive class instances programmatically.
+                     Please see the README on GitHub at <https://github.com/achirkin/constraints-deriving#readme>
 
 extra-source-files:
 - README.md
