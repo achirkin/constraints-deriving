@@ -1,4 +1,3 @@
-{-# LANGUAGE AllowAmbiguousTypes  #-}
 {-# LANGUAGE CPP                  #-}
 {-# LANGUAGE ConstraintKinds      #-}
 {-# LANGUAGE DataKinds            #-}
@@ -14,6 +13,7 @@
 {-# LANGUAGE StandaloneDeriving   #-}
 {-# LANGUAGE TypeApplications     #-}
 {-# LANGUAGE TypeFamilies         #-}
+{-# LANGUAGE TypeOperators        #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -fplugin Data.Constraint.Deriving #-}
 
@@ -26,6 +26,7 @@ module Lib.VecBackend
 
 import           Data.Constraint
 import           Data.Constraint.Deriving
+import           Data.Constraint.Unsafe
 import           GHC.Base
 import           GHC.TypeLits             (KnownNat, Nat)
 import           Unsafe.Coerce
@@ -93,55 +94,49 @@ type TestTypeType t n = TestNewtype t n
 type family TestTF t (n :: Nat)
 type instance TestTF t n = TestNewtype t n
 
--- -- Note, deriving KnownBackend goes in a not intuitive way:
--- -- VecBackend t n b ==> DataFrame t n ==> Backend t n;
--- -- this way, I may be able to not expose VecBackend in user error messages.
--- instance KnownBackend (DataFrame t n) => KnownBackend (VecBackend t n b) where
---   bSing = unsafeCoerce# (bSing :: BackendSing (DataFrame t n))
---   {-# INLINE bSing #-}
-
 -- invalid annotation for testing purposes
 {-# ANN type TestTF (ToInstance NoOverlap) #-}
 
+
 {-# ANN inferEq (ToInstance Overlappable) #-}
 inferEq :: forall t n b . ( KnownBackend b, Eq t) => Dict (Eq (VecBackend t n b))
-inferEq = case inferBase @t @n @b undefined of
-  Dict -> toVecBackend @Eq @t @n @b $ inferBackendInstance
+inferEq = mapDict toVecBackend
+        . mapDict (Sub inferBackendInstance)
+        $ inferBase @t @n @b undefined
 
 {-# ANN inferShow (ToInstance Overlappable) #-}
 inferShow :: forall t n b . ( KnownBackend b, Show t)
           => Dict (Show (VecBackend t n b))
-inferShow = case inferBase @t @n @b undefined of
-  Dict -> toVecBackend @Show @t @n @b $ inferBackendInstance
-
+inferShow = mapDict toVecBackend
+          . mapDict (Sub inferBackendInstance)
+          $ inferBase @t @n @b undefined
 
 {-# ANN inferOrd (ToInstance Overlappable) #-}
 inferOrd :: forall t n b . ( KnownBackend b, Ord t)
-          => Dict (Ord (VecBackend t n b))
-inferOrd = case inferBase @t @n @b undefined of
-  Dict -> toVecBackend @Ord @t @n @b $ inferBackendInstance
+         => Dict (Ord (VecBackend t n b))
+inferOrd = mapDict toVecBackend
+         . mapDict (Sub inferBackendInstance)
+         $ inferBase @t @n @b undefined
 
 {-# ANN inferSemigroup (ToInstance Overlappable) #-}
 inferSemigroup :: forall t n b . ( KnownBackend b, Num t)
-          => Dict (Semigroup (VecBackend t n b))
-inferSemigroup = case inferBase @t @n @b undefined of
-  Dict -> toVecBackend @Semigroup @t @n @b $ inferBackendInstance
-
+               => Dict (Semigroup (VecBackend t n b))
+inferSemigroup = mapDict toVecBackend
+               . mapDict (Sub inferBackendInstance)
+               $ inferBase @t @n @b undefined
 
 {-# ANN inferMonoid (ToInstance Overlappable) #-}
 inferMonoid :: forall t n b . ( KnownBackend b, Num t, KnownNat n)
-          => Dict (Monoid (VecBackend t n b))
-inferMonoid = case inferBase @t @n @b undefined of
-  Dict -> toVecBackend @Monoid @t @n @b $ inferBackendInstance
-
-
+            => Dict (Monoid (VecBackend t n b))
+inferMonoid = mapDict toVecBackend
+            . mapDict (Sub inferBackendInstance)
+            $ inferBase @t @n @b undefined
 
 inferBase :: VecBackend t n b -> Dict (b ~ Backend t n, t ~ DataElemType b, n ~ DataDims b)
 inferBase _ = unsafeCoerce
   (Dict :: Dict (b ~ b, t ~ t, n ~ n) )
 {-# INLINE inferBase #-}
 
-
-toVecBackend :: forall c t n b . Dict (c b) -> Dict (c (VecBackend t n b))
-toVecBackend = unsafeCoerce
+toVecBackend :: forall c t n b . c b :- c (VecBackend t n b)
+toVecBackend = unsafeDerive VecBackend
 {-# INLINE toVecBackend #-}
