@@ -1,9 +1,12 @@
+{-# LANGUAGE CPP       #-}
 {-# LANGUAGE DataKinds #-}
 module Main (main) where
 
-import Data.Semigroup
-import Lib.Vector
-import Lib.BackendFamily
+#if __GLASGOW_HASKELL__ < 804
+import           Data.Semigroup
+#endif
+import           Lib.BackendFamily
+import           Lib.Vector
 
 
 main :: IO ()

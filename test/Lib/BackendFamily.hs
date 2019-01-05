@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP                    #-}
 {-# LANGUAGE ConstraintKinds        #-}
 {-# LANGUAGE DataKinds              #-}
 {-# LANGUAGE FlexibleContexts       #-}
@@ -19,17 +20,19 @@ module Lib.BackendFamily
   ( UnitBase (..), ScalarBase (..), Vec2Base (..), ListBase (..)
   , Backend, DataElemType, DataDims
   , KnownBackend (..)
-  , BackendSing ()
-  , InferBackendInstance (..)
+  , BackendSing (), reifyBackendSing
+  , inferBackendInstance
   ) where
 
 
 import           Data.Constraint
-import           Data.Constraint.Bare
-import           Data.Semigroup
 import           Debug.Trace
 import           GHC.Base
 import           GHC.TypeLits         (KnownNat, Nat, natVal)
+#if __GLASGOW_HASKELL__ < 804
+import           Data.Semigroup
+#endif
+
 
 -- backend type level definitions
 data UnitBase (t :: Type) = UnitBase
@@ -87,21 +90,6 @@ class KnownBackend (t :: Type) where
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 instance Semigroup (UnitBase t) where
   UnitBase <> UnitBase = UnitBase
 
@@ -134,12 +122,6 @@ instance (Num t, KnownNat n) => Monoid (ListBase t n) where
   mappend = (<>)
 
 
-
-
-instance HasDict (KnownBackend backend) (BackendSing backend) where
-  evidence ds = reifyBackendSing ds Dict
-  {-# INLINE evidence #-}
-
 reifyBackendSing :: forall backend r
                   . BackendSing backend -> ( KnownBackend backend => r) -> r
 reifyBackendSing as k
@@ -165,20 +147,19 @@ instance KnownBackend (ListBase t n) where
 
 
 
-class InferBackendInstance (backend :: Type) (c :: Type -> Constraint) where
-    inferBackendInstance :: BareConstraint (c backend)
-
-instance {-# OVERLAPPABLE #-}
-         ( KnownBackend b
-         , c (UnitBase (DataElemType b))
-         , c (ScalarBase (DataElemType b))
-         , c (Vec2Base (DataElemType b))
-         , c (ListBase (DataElemType b) (DataDims b))
-         ) => InferBackendInstance b c where
-    inferBackendInstance = dictToBare $ case (bSing :: BackendSing b) of
-          BS0 -> trace "---------- Selecting UnitBase" Dict
-          BS1 -> trace "---------- Selecting ScalarBase" Dict
-          BS2 -> trace "---------- Selecting Vec2Base" Dict
-          BSn -> trace "---------- Selecting ListBase" Dict
-    {-# INLINE inferBackendInstance #-}
+inferBackendInstance
+  :: forall b c
+   . ( KnownBackend b
+     , c (UnitBase (DataElemType b))
+     , c (ScalarBase (DataElemType b))
+     , c (Vec2Base (DataElemType b))
+     , c (ListBase (DataElemType b) (DataDims b))
+     )
+  => Dict (c b)
+inferBackendInstance = case (bSing :: BackendSing b) of
+    BS0 -> trace "---------- Selecting UnitBase" Dict
+    BS1 -> trace "---------- Selecting ScalarBase" Dict
+    BS2 -> trace "---------- Selecting Vec2Base" Dict
+    BSn -> trace "---------- Selecting ListBase" Dict
+{-# INLINE inferBackendInstance #-}
 
