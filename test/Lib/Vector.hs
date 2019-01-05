@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP                        #-}
 {-# LANGUAGE DataKinds                  #-}
 {-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE FlexibleInstances          #-}
@@ -21,7 +22,9 @@ module Lib.Vector
   ) where
 
 
+#if __GLASGOW_HASKELL__ < 804
 import           Data.Semigroup
+#endif
 import           GHC.Base          (Type)
 import           GHC.TypeLits      (KnownNat, Nat)
 

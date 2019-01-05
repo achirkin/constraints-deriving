@@ -1,4 +1,5 @@
 {-# LANGUAGE AllowAmbiguousTypes  #-}
+{-# LANGUAGE CPP                  #-}
 {-# LANGUAGE ConstraintKinds      #-}
 {-# LANGUAGE DataKinds            #-}
 {-# LANGUAGE FlexibleContexts     #-}
@@ -24,12 +25,14 @@ module Lib.VecBackend
 
 
 import           Data.Constraint
-import           Data.Constraint.Bare
 import           Data.Constraint.Deriving
-import           Data.Semigroup
 import           GHC.Base
 import           GHC.TypeLits             (KnownNat, Nat)
 import           Unsafe.Coerce
+#if __GLASGOW_HASKELL__ < 804
+import           Data.Semigroup
+#endif
+
 
 import           Lib.BackendFamily
 
@@ -103,33 +106,33 @@ type instance TestTF t n = TestNewtype t n
 {-# ANN inferEq (ToInstance Overlappable) #-}
 inferEq :: forall t n b . ( KnownBackend b, Eq t) => Dict (Eq (VecBackend t n b))
 inferEq = case inferBase @t @n @b undefined of
-  Dict -> DictValue $ toVecBackend @Eq @t @n @b $ inferBackendInstance
+  Dict -> toVecBackend @Eq @t @n @b $ inferBackendInstance
 
 {-# ANN inferShow (ToInstance Overlappable) #-}
 inferShow :: forall t n b . ( KnownBackend b, Show t)
           => Dict (Show (VecBackend t n b))
 inferShow = case inferBase @t @n @b undefined of
-  Dict -> DictValue $ toVecBackend @Show @t @n @b $ inferBackendInstance
+  Dict -> toVecBackend @Show @t @n @b $ inferBackendInstance
 
 
 {-# ANN inferOrd (ToInstance Overlappable) #-}
 inferOrd :: forall t n b . ( KnownBackend b, Ord t)
           => Dict (Ord (VecBackend t n b))
 inferOrd = case inferBase @t @n @b undefined of
-  Dict -> DictValue $ toVecBackend @Ord @t @n @b $ inferBackendInstance
+  Dict -> toVecBackend @Ord @t @n @b $ inferBackendInstance
 
 {-# ANN inferSemigroup (ToInstance Overlappable) #-}
 inferSemigroup :: forall t n b . ( KnownBackend b, Num t)
           => Dict (Semigroup (VecBackend t n b))
 inferSemigroup = case inferBase @t @n @b undefined of
-  Dict -> DictValue $ toVecBackend @Semigroup @t @n @b $ inferBackendInstance
+  Dict -> toVecBackend @Semigroup @t @n @b $ inferBackendInstance
 
 
 {-# ANN inferMonoid (ToInstance Overlappable) #-}
 inferMonoid :: forall t n b . ( KnownBackend b, Num t, KnownNat n)
           => Dict (Monoid (VecBackend t n b))
 inferMonoid = case inferBase @t @n @b undefined of
-  Dict -> DictValue $ toVecBackend @Monoid @t @n @b $ inferBackendInstance
+  Dict -> toVecBackend @Monoid @t @n @b $ inferBackendInstance
 
 
 
@@ -139,6 +142,6 @@ inferBase _ = unsafeCoerce
 {-# INLINE inferBase #-}
 
 
-toVecBackend :: forall c t n b . BareConstraint (c b) -> BareConstraint (c (VecBackend t n b))
+toVecBackend :: forall c t n b . Dict (c b) -> Dict (c (VecBackend t n b))
 toVecBackend = unsafeCoerce
 {-# INLINE toVecBackend #-}

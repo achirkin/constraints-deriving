@@ -24,8 +24,9 @@ import           Control.Applicative (Alternative (..))
 import           Control.Arrow       (second)
 import           Control.Monad       (join, unless)
 import           Data.Data           (Data, typeRep)
+import           Data.Either         (partitionEithers)
 import           Data.IORef          (IORef, modifyIORef', newIORef, readIORef)
-import qualified Data.Kind           as Kind
+import qualified Data.Kind           (Constraint, Type)
 import           Data.List           (groupBy, sortOn)
 import           Data.Maybe          (fromMaybe, isJust, mapMaybe)
 import           Data.Monoid         (Any (..), First (..))
@@ -38,11 +39,14 @@ import           GhcPlugins          hiding (OverlapMode (..), overlapMode,
 import qualified GhcPlugins
 import qualified IfaceEnv
 import qualified InstEnv
-import qualified Kind
 import           MonadUtils          (MonadIO (..))
 import           Panic               (panicDoc)
-import qualified TcRnMonad
 import qualified Unify
+#if __GLASGOW_HASKELL__ < 806
+import qualified Kind                (isConstraintKind)
+import qualified TcRnMonad           (initTcForLookup)
+#endif
+
 
 -- | A marker to tell the core plugin to convert BareConstraint top-level binding into
 --   an instance declaration.
@@ -78,12 +82,13 @@ data OverlapMode
 data DeriveAll = DeriveAll
   deriving (Eq, Show, Data)
 
+
 -- | This type family is used to impose constraints on type parameters when looking up type instances
 --   for the `DeriveAll` core plugin.
 --
 --   `DeriveAll` uses only those instances that satisfy the specified constraint.
 --   If the constraint is not specified, it is assumed to be `()`.
-type family DeriveContext (t :: Kind.Type) :: Kind.Constraint
+type family DeriveContext (t :: Data.Kind.Type) :: Data.Kind.Constraint
 
 -- | To use the plugin, add
 --
@@ -533,7 +538,7 @@ lookupMatchingBaseTypes guts tyCon dataCon (tys, constraints) = do
 --   1. The ones used as substitutions
 --   2. Irreducible ones w.r.t. the type expansion algorithm
 filterTheta :: ThetaType -> CorePluginM ([(TyVar, Type)], ThetaType)
-filterTheta = fmap (splitEithers . join) . traverse
+filterTheta = fmap (partitionEithers . join) . traverse
   (\t -> do
     teqClass <- ask classTypeEq
     filterTheta' teqClass t
@@ -599,8 +604,8 @@ expandOneFamily guts mt@MatchingType{..} = case mfam of
 --     | Just (tyCon, tys) <- splitTyConApp_maybe t
 --       = mkTyConApp tyCon $ map clearSynonyms tys
 --       -- split foralls
---     | (bndrs@(_:_), t1) <- splitPiTys t
---       = mkPiTys bndrs $ clearSynonyms t1
+--     | (bndrs@(_:_), t1) <- splitForAllTys t
+--       = mkSpecForAllTys bndrs $ clearSynonyms t1
 --       -- split arrow types
 --     | Just (at, rt) <- splitFunTy_maybe t
 --       = mkFunTy (clearSynonyms at) (clearSynonyms rt)
@@ -626,7 +631,7 @@ lookupFamily ignoreLst t
             then Nothing
             else Just (ff, t)
       -- split foralls
-    | ((_:_), t') <- splitPiTys t
+    | ((_:_), t') <- splitForAllTys t
       = lookupFamily ignoreLst t'
       -- split arrow types
     | Just (at, rt) <- splitFunTy_maybe t
@@ -686,9 +691,7 @@ expandClosedFamily :: [OverlapMode]
 expandClosedFamily _ [] _ = Nothing
 expandClosedFamily os bs fTyArgs = Just $ mapMaybe go $ zip os bs
   where
-    -- I've decided to use tcMatchTyKis, which means matching Kinds too,
-    -- though I may discover later should I change it to tcMatchTys.
-    go (om, cb) = (,,) om (coAxBranchRHS cb) <$> Unify.tcMatchTyKis fTyArgs (coAxBranchLHS cb)
+    go (om, cb) = (,,) om (coAxBranchRHS cb) <$> Unify.tcMatchTys fTyArgs (coAxBranchLHS cb)
 
 
 -- | The same as `expandFamily`, but I know already that the family is open.
@@ -822,7 +825,7 @@ toInstancePass gs = go (reverse $ mg_binds gs) annotateds gs { mg_binds = []}
             { mg_insts    = newInstance : mg_insts guts
             , mg_inst_env = InstEnv.extendInstEnv (mg_inst_env guts) newInstance
             , mg_binds    = newBind : mg_binds guts
-            , mg_exports  = Avail.filterAvails (xn /=) $ mg_exports guts
+            , mg_exports  = filterAvails (xn /=) $ mg_exports guts
             }
 
     -- ignore the rest of bindings
@@ -848,7 +851,7 @@ toInstance _ (Rec xs) = do
 
 toInstance (ToInstance overlapMode) (NonRec bindVar bindExpr) = do
     -- check if all type arguments are constraint arguments
-    unless (all (Kind.isConstraintKind . typeKind) theta) $
+    unless (all (isConstraintKind . typeKind) theta) $
       pluginLocatedError loc notGoodMsg
 
     -- get necessary definitions
@@ -863,8 +866,8 @@ toInstance (ToInstance overlapMode) (NonRec bindVar bindExpr) = do
       Nothing -> pluginLocatedError loc notGoodMsg
       Just ma -> pure ma
     let matchedTy = substTyVar match varCls
-        instSig = mkForAllTys bndrs $ mkFunTys theta matchedTy
-        bindBareTy = mkForAllTys bndrs $ mkFunTys theta $ mkTyConApp tcBareConstraint [matchedTy]
+        instSig = mkSpecForAllTys bndrs $ mkFunTys theta matchedTy
+        bindBareTy = mkSpecForAllTys bndrs $ mkFunTys theta $ mkTyConApp tcBareConstraint [matchedTy]
 
     -- check if constraint is indeed a class and get it
     matchedClass <- case tyConAppTyCon_maybe matchedTy >>= tyConClass_maybe of
@@ -882,7 +885,7 @@ toInstance (ToInstance overlapMode) (NonRec bindVar bindExpr) = do
 
   where
     origBindTy = idType bindVar
-    (bndrs, bindTy) = splitForAllTyVarBndrs origBindTy
+    (bndrs, bindTy) = splitForAllTys origBindTy
     (theta, dictTy) = splitFunTys bindTy
     loc = nameSrcSpan $ getName bindVar
     notGoodMsg =
@@ -991,8 +994,8 @@ maybeReplaceTypeOccurrences tv told tnew = replace
       | Just (tyCon, tys) <- splitTyConApp_maybe t
         = mkTyConApp tyCon <$> mapM replace tys
         -- split foralls
-      | (bndrs@(_:_), t') <- splitPiTys t
-        = mkPiTys bndrs <$> replace t'
+      | (bndrs@(_:_), t') <- splitForAllTys t
+        = mkSpecForAllTys bndrs <$> replace t'
         -- split arrow types
       | Just (at, rt) <- splitFunTy_maybe t
         = mkFunTy <$> replace at <*> replace rt
@@ -1004,9 +1007,12 @@ lookupName :: Module -> OccName -> CorePluginM Name
 lookupName m occn = do
     hscEnv <- liftCoreM getHscEnv
     liftIO
+#if __GLASGOW_HASKELL__ < 806
         $ TcRnMonad.initTcForLookup hscEnv
         $ IfaceEnv.lookupOrig m occn
-
+#else
+        $ IfaceEnv.lookupOrigIO hscEnv m occn
+#endif
 
 lookupModule :: ModuleName
              -> [FastString]
@@ -1058,13 +1064,13 @@ pluginProblemMsg mspan sev msg = do
 
 
 pnConstraintsDeriving :: FastString
-pnConstraintsDeriving = "constraints-deriving"
+pnConstraintsDeriving = mkFastString "constraints-deriving"
 
 pnConstraints :: FastString
-pnConstraints = "constraints"
+pnConstraints = mkFastString "constraints"
 
 pnBase :: FastString
-pnBase = "base"
+pnBase = mkFastString "base"
 
 mnConstraint :: ModuleName
 mnConstraint = mkModuleName "Data.Constraint"
@@ -1106,8 +1112,8 @@ replaceTypeOccurrences told tnew = replace
       | Just (tyCon, tys) <- splitTyConApp_maybe t
         = mkTyConApp tyCon $ map replace tys
         -- split foralls
-      | (bndrs@(_:_), t') <- splitPiTys t
-        = mkPiTys bndrs $ replace t'
+      | (bndrs@(_:_), t') <- splitForAllTys t
+        = mkSpecForAllTys bndrs $ replace t'
         -- split arrow types
       | Just (at, rt) <- splitFunTy_maybe t
         = mkFunTy (replace at) (replace rt)
@@ -1130,9 +1136,46 @@ toOverlapFlag m = OverlapFlag (getOMode m) False
     noSourceText = "[plugin-generated code]"
 #endif
 
+
+filterAvails :: (Name -> Bool) -> [Avail.AvailInfo] -> [Avail.AvailInfo]
 #if __GLASGOW_HASKELL__ < 802
-mkPiTys :: [Var] -> Type -> Type
-mkPiTys = mkPiTypes
+filterAvails _    [] = []
+filterAvails keep (a:as) = case go a of
+    Nothing -> filterAvails keep as
+    Just fa -> fa : filterAvails keep as
+  where
+    go x@(Avail.Avail _ n)
+      | keep n    = Just x
+      | otherwise = Nothing
+    go (Avail.AvailTC n ns fs) =
+      let ns' = filter keep ns
+          fs' = filter (keep . flSelector) fs
+      in if null ns' && null fs'
+         then Nothing
+         else Just $ Avail.AvailTC n ns' fs'
+#else
+filterAvails = Avail.filterAvails
+#endif
+
+#if __GLASGOW_HASKELL__ < 802
+bullet :: SDoc
+bullet = unicodeSyntax (char '•') (char '*')
+#endif
+
+#if __GLASGOW_HASKELL__ < 802
+putLogMsg :: DynFlags -> WarnReason -> ErrUtils.Severity
+          -> SrcSpan -> PprStyle -> SDoc -> IO ()
+putLogMsg dflags = log_action dflags dflags
+#endif
+
+
+
+-- This function was moved and renamed in GHC 8.6
+isConstraintKind :: Kind -> Bool
+#if __GLASGOW_HASKELL__ < 806
+isConstraintKind = Kind.isConstraintKind
+#else
+isConstraintKind = tcIsConstraintKind
 #endif
 
 -- | Similar to `getAnnotations`, but keeps the annotation target.
