@@ -33,6 +33,8 @@ library:
   exposed-modules:
   - Data.Constraint.Bare
   - Data.Constraint.Deriving
+  - Data.Constraint.Deriving.DeriveAll
+  - Data.Constraint.Deriving.ToInstance
   other-modules:
   - Data.Constraint.Deriving.CorePluginM
   when:
