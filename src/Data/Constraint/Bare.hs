@@ -25,8 +25,8 @@ module Data.Constraint.Bare
   ) where
 
 
-import           Data.Constraint (Dict (..))
-import           GHC.Base        (Constraint, Type, unsafeCoerce#)
+import Data.Constraint (Dict (..))
+import GHC.Base        (Constraint, Type, unsafeCoerce#)
 
 -- | An unsafeCoerced pointer to a Constraint, such as a class function dictionary.
 data BareConstraint :: Constraint -> Type

@@ -41,7 +41,7 @@ But the whole thing is executed at compile time, so there is no danger of failur
   * [x] Cover more compiler versions: GHC 8+ (tested on 8.0.2 - 8.6.3)
   * [ ] Add travis
   * [ ] Add more tests
-  * [ ] Refactor `Data.Constraint.Deriving` into submodules.
+  * [x] Refactor `Data.Constraint.Deriving` into submodules.
   * [ ] Finish the readme, show examples
   * [ ] Put the library on hackage
   
