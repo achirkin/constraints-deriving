@@ -33,6 +33,8 @@ library:
   exposed-modules:
   - Data.Constraint.Bare
   - Data.Constraint.Deriving
+  other-modules:
+  - Data.Constraint.Deriving.CorePluginM
   when:
   - condition: flag(constraints)
     then:
