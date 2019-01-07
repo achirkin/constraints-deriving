@@ -1,40 +1,34 @@
-{-# LANGUAGE CPP       #-}
-{-# LANGUAGE DataKinds #-}
 module Main (main) where
 
-#if __GLASGOW_HASKELL__ < 804
-import           Data.Semigroup
-#endif
-import           Lib.BackendFamily
-import           Lib.Vector
-
+import Control.Monad (join)
+import DynFlags
+import GHC
+import GHC.Paths     (libdir)
+import Util          (OverridingBool (..))
 
 main :: IO ()
 main = do
-    print $ Vec UnitBase <> (mempty :: Vector Double 0)
-    print $ Vec (ScalarBase (7 :: Double)) <> Vec (ScalarBase 15)
-    print $ Vec (ScalarBase (7 :: Double)) <> mempty
-    print $ mempty <> Vec (Vec2Base 2 6) <> (Vec (Vec2Base 3 12) :: Vector Double 2)
-    print $ mempty <> Vec (ListBase [9,8,7,6,5]) <> (Vec (ListBase [1,2,3,4,5]) :: Vector Double 5)
-    case sdf2 of
-      SomeVector x -> print $ mappend x x <> mempty
-    case sdf7 of
-      SomeVector x -> print $ f x
-  where
-    sdf2 = SomeVector $ Vec (Vec2Base 2 (6 :: Int))
-    sdf7 = SomeVector
-      (Vec (ListBase [1,2,3,4,5,16,92]) :: Vector Float 7)
-
-
-
-f :: ( Semigroup t, Monoid t) => t -> t
-f x = x <> x <> x <> mempty <> x
-{-
- Pragma NOINLINE reduces the number of calls to the dictionary function.
- With optimization enabled, this is 6 vs 3.
- Assuming one call is for Show instance, f invokes the DFun  once for each type.
-
- If the function is inlined,  DFun seems to be invoked every time the Monoid
- or Semigroup functions are called.
- -}
-{-# NOINLINE f #-}
+  r <- defaultErrorHandler defaultFatalMessager defaultFlushOut $
+    runGhc (Just libdir) $ do
+      dflags <- getSessionDynFlags
+      let fgs' = dflags
+            { ghcMode     = OneShot
+            , ghcLink     = NoLink
+            , verbosity   = 1
+            , optLevel    = 0
+            , ways        = []
+            , useUnicode  = False
+            , useColor    = Never
+            , canUseColor = False
+            } `gopt_set` Opt_DoCoreLinting
+              `gopt_unset` Opt_PrintUnicodeSyntax
+              `gopt_unset` Opt_DiagnosticsShowCaret
+          minusWall = join . map snd $ filter (("all"==) . fst) warningGroups
+          fgs = foldl wopt_set fgs' minusWall
+      _ <- setSessionDynFlags fgs
+      target <- guessTarget "test/Spec/DeriveAll01.hs" Nothing
+      setTargets [target]
+      load LoadAllTargets
+  case r of
+    Succeeded -> putStrLn "Done!"
+    Failed    -> putStrLn "Oops!"
