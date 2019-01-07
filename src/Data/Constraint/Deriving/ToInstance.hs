@@ -22,8 +22,40 @@ import qualified Unify
 import Data.Constraint.Deriving.CorePluginM
 
 
--- | A marker to tell the core plugin to convert BareConstraint top-level binding into
---   an instance declaration.
+{- | A marker to tell the core plugin to convert a top-level `Data.Constraint.Dict` binding into
+     an instance declaration.
+
+     Example:
+
+@
+type family FooFam a where
+  FooFam Int = Int
+  FooFam a   = Double
+
+data FooSing a where
+  FooInt   :: FooSing Int
+  FooNoInt :: FooSing a
+
+class FooClass a where
+  fooSing :: FooSing a
+
+newtype Bar a = Bar (FooFam a)
+
+{\-\# ANN fooNum (ToInstance NoOverlap) \#-\}
+fooNum :: forall a . Dict (Num (Bar a))
+fooNum = mapDict (unsafeDerive Bar) $ case fooSing @a of
+  FooInt   -> Dict
+  FooNoInt -> Dict
+@
+
+     Note:
+
+     * `fooNum` must be exported by the module
+        (otherwise, it may be optimized-out before the core plugin pass);
+     * Constraints of the function become constraints of the new instance;
+     * The argument of `Dict` must be a single class (no constraint tuples or equality constraints);
+     * The instance is created in a core-to-core pass, so it does not exist for the type checker in the current module.
+ -}
 newtype ToInstance = ToInstance { overlapMode :: OverlapMode }
   deriving (Eq, Show, Read, Data)
 
