@@ -2,3 +2,5 @@
 constraints-deriving.cabal
 *~
 TAGS
+*.hi
+*.o

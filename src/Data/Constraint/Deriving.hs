@@ -10,12 +10,9 @@ module Data.Constraint.Deriving
   ) where
 
 
-#if MIN_VERSION_ghc(8,6,0)
-import GhcPlugins (CoreM, CoreToDo, Plugin (..), defaultPlugin, purePlugin)
-#else
-import GhcPlugins (CoreM, CoreToDo, Plugin (..), defaultPlugin)
-#endif
 
+import GhcPlugins hiding (OverlapMode (..), overlapMode)
+import Data.List (sortOn)
 
 import Data.Constraint.Deriving.DeriveAll
 import Data.Constraint.Deriving.ToInstance
@@ -28,19 +25,52 @@ import Data.Constraint.Deriving.ToInstance
 -- {\-\# OPTIONS_GHC -fplugin Data.Constraint.Deriving \#-\}
 -- @
 --
--- To the header of your file.
+-- to the header of your file.
+--
+-- For debugging, add a plugin option @dump-instances@
+--
+-- @
+-- {\-\# OPTIONS_GHC -fplugin-opt Data.Constraint.Deriving:dump-instances \#-\}
+-- @
+--
+-- to the header of your file; it will print all instances declared in the module
+-- (hand-written and auto-generated).
+--
 plugin :: Plugin
 plugin = defaultPlugin
-  { installCoreToDos = const install
+  { installCoreToDos = install
 #if MIN_VERSION_ghc(8,6,0)
   , pluginRecompile = purePlugin
 #endif
   }
 
-install :: [CoreToDo] -> CoreM [CoreToDo]
-install todo = do
-  eref <- initCorePluginEnv
-  return ( deriveAllPass eref
-         : toInstancePass eref
-         : todo)
+install :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
+install cmdopts todo = do
+    eref <- initCorePluginEnv
+    return ( deriveAllPass eref
+           : toInstancePass eref
+           : if flagDumpInstances
+             then dumpInstances:todo
+             else todo
+           )
+  where
+    flagDumpInstances = any ("dump-instances"==) cmdopts
+
+
+-- | Just print all instance signatures in this module
+dumpInstances :: CoreToDo
+dumpInstances = CoreDoPluginPass "Data.Constraint.Deriving.DumpInstances"
+              $ \guts -> guts <$ go (mg_insts guts)
+  where
+    locdoc i = (nameSrcSpan $ getName i, ppr i)
+    go is = do
+      let is' = sortOn fst $ map locdoc is
+      putMsg $
+        blankLine
+        $+$
+        hang
+          (text "============ Class instances declared in this module ============")
+          2 (vcat $ map snd is')
+        $+$
+        blankLine
 
