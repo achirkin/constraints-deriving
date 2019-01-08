@@ -23,6 +23,8 @@ main = do
             } `gopt_set` Opt_DoCoreLinting
               `gopt_unset` Opt_PrintUnicodeSyntax
               `gopt_unset` Opt_DiagnosticsShowCaret
+              `gopt_set` Opt_ForceRecomp
+              -- `dopt_set` Opt_D_dump_deriv
           minusWall = join . map snd $ filter (("all"==) . fst) warningGroups
           fgs = foldl wopt_set fgs' minusWall
       _ <- setSessionDynFlags fgs

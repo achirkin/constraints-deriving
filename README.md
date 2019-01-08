@@ -40,8 +40,11 @@ But the whole thing is executed at compile time, so there is no danger of failur
 
   * [x] Cover more compiler versions: GHC 8+ (tested on 8.0.2 - 8.6.3)
   * [ ] Add travis
-  * [ ] Add more tests
+  * [ ] Add more tests (in progress)
   * [x] Refactor `Data.Constraint.Deriving` into submodules.
   * [ ] Finish the readme, show examples
   * [ ] Put the library on hackage
+  * [ ] Maybe create new vars in ToInstance instead of replacing existing
+  * [ ] Improve basetype lookup in DeriveAll (it generates less classes than expected)
+  * [ ] Keep generated files from Spec folder during tests
   
