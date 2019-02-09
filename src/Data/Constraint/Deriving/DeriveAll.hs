@@ -107,7 +107,11 @@ deriveAllPass' gs = go (mg_tcs gs) annotateds gs
       -- add new definitions and continue
       go xs (delFromUFM anns x) guts
         { mg_insts    = newInstances ++ mg_insts guts
-        , mg_inst_env = InstEnv.extendInstEnvList (mg_inst_env guts) newInstances
+        --   I decided to not modify mg_inst_env so that DeriveAll-derived instances
+        --   do not refer to each other.
+        --   Overwise, the result of the plugin would depend on the order of
+        --   type declaration, which would be not good at all.
+        -- , mg_inst_env = InstEnv.extendInstEnvList (mg_inst_env guts) newInstances
         , mg_binds    = newBinds ++ mg_binds guts
         }
 
@@ -198,8 +202,9 @@ data MatchingType
   , mtNewType     :: Type
     -- ^ The newtype with instantiated type arguments
   , mtIgnoreList  :: [Type]
-    -- ^ A list of type families I have already attempted to expand, but failed
-    --   (e.g. wired-in type families or closed families with no equations).
+    -- ^ A list of type families I have already attempted to expand once
+    --   (e.g. wired-in type families or closed families with no equations
+    --         or something recursive).
   }
 
 instance Outputable MatchingType where
@@ -245,7 +250,7 @@ cleanupMatchingType mt0 = go (groupLists $ mtCtxEqs mt0) mt0 { mtCtxEqs = []}
     groupOn f = groupBy (\x y -> f x == f y)
     flattenSnd []                   = []
     flattenSnd ([]:xs)              = flattenSnd xs
-    flattenSnd ((ts@((tv,_):_)):xs) = (tv, map snd ts): flattenSnd xs
+    flattenSnd (ts@((tv,_):_):xs) = (tv, map snd ts): flattenSnd xs
     groupLists = flattenSnd . groupOn fst . sortOn fst
 
 
@@ -288,9 +293,8 @@ lookupMatchingBaseTypes guts tyCon dataCon (tys, constraints) = do
           , mtNewType     = newType
           , mtIgnoreList  = []
           }
-    mts <- map cleanupMatchingType . take 1000 -- TODO: improve the logic and the termination rule
+    map cleanupMatchingType . take 1000 -- TODO: improve the logic and the termination rule
         <$> go (cleanupMatchingType initMt)
-    return mts
   where
     go :: MatchingType -> CorePluginM [MatchingType]
     go mt = expandOneFamily guts mt >>= \case
@@ -371,6 +375,8 @@ filterTheta' teqClass t = go (classifyPredType t)
     go (ClassPred c ts)
       | c == heqClass
       , [_, _, t1, t2] <- ts
+          -- nominal or rep-al equality does not matter here, because
+          -- I don't distinguish between those a few lines above.
         = go (EqPred ReprEq t1 t2)
       | c == teqClass
       , [_, t1, t2] <- ts
@@ -382,8 +388,7 @@ filterTheta' teqClass t = go (classifyPredType t)
 expandOneFamily :: ModGuts -> MatchingType -> CorePluginM (Maybe [MatchingType])
 expandOneFamily guts mt@MatchingType{..} = case mfam of
     Nothing      -> return Nothing
-    Just (ff, t) ->
-      expandFamily guts ff t >>= \case
+    Just (ff, t) -> expandFamily guts ff t >>= \case
         Nothing -> return $ Just [mt { mtIgnoreList = t : mtIgnoreList }]
         Just es -> return $ Just $ map (toMT t) es
   where
@@ -442,7 +447,7 @@ lookupFamily ignoreLst t
             then Nothing
             else Just (ff, t)
       -- split foralls
-    | ((_:_), t') <- splitForAllTys t
+    | (_:_, t') <- splitForAllTys t
       = lookupFamily ignoreLst t'
       -- split arrow types
     | Just (at, rt) <- splitFunTy_maybe t
@@ -484,7 +489,7 @@ expandFamily _ (ClosedSynFamilyTyCon (Just coax)) ft
 -- For a data family or an open type family, I need to lookup instances
 -- in the family instance environment.
 expandFamily guts DataFamilyTyCon{} ft
-  = withFamily ft (pure Nothing) $ expandOpenFamily guts
+  = withFamily ft (pure Nothing) $ expandDataFamily guts
 expandFamily guts OpenSynFamilyTyCon ft
   = withFamily ft (pure Nothing) $ expandOpenFamily guts
 
@@ -521,6 +526,25 @@ expandOpenFamily guts fTyCon fTyArgs = do
            fTyArgs
 
 
+-- | The same as `expandFamily`, but I know already that this is a data family.
+expandDataFamily :: ModGuts
+                 -> TyCon  -- ^ Type family construtor
+                 -> [Type] -- ^ Type family arguments
+                 -> CorePluginM (Maybe [(OverlapMode, Type, TCvSubst)])
+expandDataFamily guts fTyCon fTyArgs = do
+  tfInsts <- lookupTyFamInstances guts fTyCon
+  return $
+    if null tfInsts
+    then Just [] -- No mercy
+    else traverse expandDInstance tfInsts
+  where
+    expandDInstance inst
+      | instTyArgs <- align fTyArgs (FamInstEnv.fi_tys inst)
+      = (,,) NoOverlap (mkTyConApp fTyCon instTyArgs)
+      <$> Unify.tcMatchTys fTyArgs instTyArgs
+    align [] _ = []
+    align xs [] = xs
+    align (_:xs) (y:ys) = y : align xs ys
 
 
 
@@ -578,4 +602,3 @@ matchInstance MatchingType {..} baseInst
     newtypeNameS = case tyConAppTyCon_maybe mtNewType of
       Nothing -> "DeriveAll-generated"
       Just tc -> occNameString $ occName $ tyConName tc
-

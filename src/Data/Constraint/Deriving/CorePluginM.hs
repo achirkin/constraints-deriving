@@ -53,11 +53,11 @@ import qualified TcRnMonad (initTcForLookup)
 --
 --     * An environment with things that computed on demand, once at most.
 --
-data CorePluginM a = CorePluginM
+newtype CorePluginM a = CorePluginM
   { runCorePluginM :: IORef CorePluginEnv -> CoreM (Maybe a) }
 
 instance Functor CorePluginM where
-  fmap f m = CorePluginM $ \e -> fmap f <$> runCorePluginM m e
+  fmap f m = CorePluginM $ fmap (fmap f) . runCorePluginM m
 
 instance Applicative CorePluginM where
   pure = CorePluginM . const . pure . Just
