@@ -49,12 +49,10 @@ install cmdopts todo = do
     eref <- initCorePluginEnv
     return ( deriveAllPass eref
            : toInstancePass eref
-           : if flagDumpInstances
+           : if elem "dump-instances" cmdopts
              then dumpInstances:todo
              else todo
            )
-  where
-    flagDumpInstances = any ("dump-instances"==) cmdopts
 
 
 -- | Just print all instance signatures in this module
@@ -73,4 +71,3 @@ dumpInstances = CoreDoPluginPass "Data.Constraint.Deriving.DumpInstances"
           2 (vcat $ map snd is')
         $+$
         blankLine
-

@@ -47,7 +47,3 @@ type instance DeriveContext (TestNewtype2 a b r) = FooFam a b ~ r
 --
 --{-# ANN type TestTypeType DeriveAll #-}
 --type TestTypeType t n = TestNewtype1 t n
-
-
-
-
