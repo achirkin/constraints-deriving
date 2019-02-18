@@ -70,6 +70,8 @@ tests:
     source-dirs:         test
     other-modules:       []
     dependencies:
+    - constraints-deriving
     - ghc
     - ghc-paths
-    - constraints-deriving
+    - path
+    - path-io
