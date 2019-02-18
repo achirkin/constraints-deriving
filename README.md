@@ -45,7 +45,7 @@ But the whole thing is executed at compile time, so there is no danger of failur
   * [ ] Finish the readme, show examples
   * [ ] Put the library on hackage
   * [ ] Maybe create new vars in ToInstance instead of replacing existing
-	* [ ] Fix that `matchTys` in `matchInstance` does not match data family instances
+  * [ ] Fix that `matchTys` in `matchInstance` does not match data family instances
   * [ ] Keep generated files from Spec folder during tests
   * [ ] Test if `Coercible basetype newtype` before adding DeriveAll instances
   * [ ] Remove generated .hi and .o files from test/Spec
