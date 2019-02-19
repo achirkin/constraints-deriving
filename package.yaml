@@ -41,10 +41,9 @@ library:
   when:
   - condition: flag(constraints)
     then:
-      verbatim: |
-        reexported-modules:
-            constraints:Data.Constraint
-          , constraints:Data.Constraint.Unsafe
+      reexported-modules:
+        - constraints:Data.Constraint,
+        - constraints:Data.Constraint.Unsafe
       dependencies:
       - constraints >= 0.6
     else:
