@@ -42,8 +42,8 @@ library:
   - condition: flag(constraints)
     then:
       reexported-modules:
-        - constraints:Data.Constraint,
-        - constraints:Data.Constraint.Unsafe
+      - constraints:Data.Constraint,
+      - constraints:Data.Constraint.Unsafe
       dependencies:
       - constraints >= 0.6
     else:
