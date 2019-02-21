@@ -66,27 +66,27 @@ matrix:
     compiler: ": #stack nightly"
     addons: {apt: {packages: [libgmp-dev]}}
 
-  - env: BUILD=stack ARGS="--resolver lts-7 --flag *:constraints"
+  - env: BUILD=stack ARGS="--resolver lts-7" PFLAGS="--flag *:constraints"
     compiler: ": #stack 8.0.1 +constraints"
     addons: {apt: {packages: [libgmp-dev]}}
 
-  - env: BUILD=stack ARGS="--resolver lts-9 --flag *:constraints"
+  - env: BUILD=stack ARGS="--resolver lts-9" PFLAGS="--flag *:constraints"
     compiler: ": #stack 8.0.2 +constraints"
     addons: {apt: {packages: [libgmp-dev]}}
 
-  - env: BUILD=stack ARGS="--resolver lts-11 --flag *:constraints"
+  - env: BUILD=stack ARGS="--resolver lts-11" PFLAGS="--flag *:constraints"
     compiler: ": #stack 8.2.2 +constraints"
     addons: {apt: {packages: [libgmp-dev]}}
 
-  - env: BUILD=stack ARGS="--resolver lts-12 --flag *:constraints"
+  - env: BUILD=stack ARGS="--resolver lts-12" PFLAGS="--flag *:constraints"
     compiler: ": #stack 8.4.4 +constraints"
     addons: {apt: {packages: [libgmp-dev]}}
 
-  - env: BUILD=stack ARGS="--resolver lts-13 --flag *:constraints"
+  - env: BUILD=stack ARGS="--resolver lts-13" PFLAGS="--flag *:constraints"
     compiler: ": #stack 8.6.3 +constraints"
     addons: {apt: {packages: [libgmp-dev]}}
 
-  - env: BUILD=stack ARGS="--resolver nightly --flag *:constraints"
+  - env: BUILD=stack ARGS="--resolver nightly" PFLAGS="--flag *:constraints"
     compiler: ": #stack nightly +constraints"
     addons: {apt: {packages: [libgmp-dev]}}
 
@@ -120,18 +120,17 @@ matrix:
     compiler: ": #stack nightly osx"
     os: osx
 
-  - env: BUILD=stack ARGS="--resolver lts-9 --flag *:constraints"
+  - env: BUILD=stack ARGS="--resolver lts-9" PFLAGS="--flag *:constraints"
     compiler: ": #stack 8.0.2 osx +constraints"
     os: osx
 
-  - env: BUILD=stack ARGS="--resolver lts-13 --flag *:constraints"
+  - env: BUILD=stack ARGS="--resolver lts-13" PFLAGS="--flag *:constraints"
     compiler: ": #stack 8.6.3 osx +constraints"
     os: osx
 
   allow_failures:
   - env: BUILD=cabal GHCVER=head  CABALVER=head HAPPYVER=1.19.5 ALEXVER=3.1.7
   - env: BUILD=stack ARGS="--resolver nightly"
-  - env: BUILD=stack ARGS="--resolver nightly --flag *:constraints"
 
 before_install:
 # Using compiler above sets CC to an invalid value, so unset it
@@ -187,7 +186,7 @@ script:
   set -ex
   case "$BUILD" in
     stack)
-      stack --no-terminal $ARGS test --bench --no-run-benchmarks --haddock --no-haddock-deps
+      stack --no-terminal $ARGS $PFLAGS test --bench --no-run-benchmarks --haddock --no-haddock-deps
       ;;
     cabal)
       cabal install --enable-tests --enable-benchmarks --force-reinstalls --ghc-options=-O0 --reorder-goals --max-backjumps=-1 $CABALARGS $PACKAGES
