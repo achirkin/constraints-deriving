@@ -41,13 +41,13 @@ But the whole thing is executed at compile time, so there is no danger of failur
 ## Further work
 
   * [x] Cover more compiler versions: GHC 8+ (tested on 8.0.2 - 8.6.3)
-  * [ ] Add travis
+  * [x] Add travis
   * [ ] Add more tests (in progress)
   * [x] Refactor `Data.Constraint.Deriving` into submodules.
   * [ ] Finish the readme, show examples
   * [ ] Put the library on hackage
   * [ ] Maybe create new vars in ToInstance instead of replacing existing
   * [ ] Fix that `matchTys` in `matchInstance` does not match data family instances
-  * [ ] Keep generated files from Spec folder during tests
+  * [x] Keep generated files from Spec folder during tests
   * [ ] Test if `Coercible basetype newtype` before adding DeriveAll instances
-  * [ ] Remove generated .hi and .o files from test/Spec
+  * [x] Remove generated .hi and .o files from test/Spec
