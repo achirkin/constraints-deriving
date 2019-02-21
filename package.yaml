@@ -13,11 +13,8 @@ description:         The library provides a plugin to derive class instances pro
 extra-source-files:
 - README.md
 - test/Spec/*.hs
-
-ghc-options: -Wall
-
-dependencies:
-- base >= 4.9 && < 5
+- test/out/*.stderr
+- test/out/*.stdout
 
 flags:
 
@@ -34,6 +31,15 @@ flags:
     default: false
     manual: true
 
+ghc-options: -Wall
+
+dependencies:
+- base >= 4.9 && < 5
+
+custom-setup:
+  dependencies:
+  - base
+  - Cabal
 
 library:
   source-dirs: src
@@ -49,9 +55,6 @@ library:
   when:
   - condition: flag(constraints)
     then:
-      reexported-modules:
-      - constraints:Data.Constraint,
-      - constraints:Data.Constraint.Unsafe
       dependencies:
       - constraints >= 0.6
     else:
@@ -76,15 +79,17 @@ tests:
 executables:
   deriving-example:
     when:
-      - condition: (!flag(examples))
-        buildable: false
+      - condition: flag(examples)
+        then:
+          ghc-options:
+          - -dcore-lint
+        else:
+          buildable: false
     main:                Main.hs
     source-dirs:         example
     other-modules:
     - Lib.BackendFamily
     - Lib.VecBackend
     - Lib.Vector
-    ghc-options:
-    - -dcore-lint
     dependencies:
     - constraints-deriving
