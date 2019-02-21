@@ -20,12 +20,20 @@ dependencies:
 - base >= 4.9 && < 5
 
 flags:
+
   constraints:
     description:
       Use vanilla constraints package as a dependency
       instead of the manual minimalistic definitions copied from there.
     default: false
     manual: true
+
+  examples:
+    description:
+      Whether to build examples
+    default: false
+    manual: true
+
 
 library:
   source-dirs: src
@@ -53,17 +61,6 @@ library:
       source-dirs: src-constraints
 
 tests:
-  deriving-example:
-    main:                Main.hs
-    source-dirs:         example
-    other-modules:
-    - Lib.BackendFamily
-    - Lib.VecBackend
-    - Lib.Vector
-    ghc-options:
-    - -dcore-lint
-    dependencies:
-    - constraints-deriving
   functional-tests:
     main:                Spec.hs
     source-dirs:         test
@@ -74,3 +71,20 @@ tests:
     - ghc-paths
     - path
     - path-io
+    - bytestring
+
+executables:
+  deriving-example:
+    when:
+      - condition: (!flag(examples))
+        buildable: false
+    main:                Main.hs
+    source-dirs:         example
+    other-modules:
+    - Lib.BackendFamily
+    - Lib.VecBackend
+    - Lib.Vector
+    ghc-options:
+    - -dcore-lint
+    dependencies:
+    - constraints-deriving

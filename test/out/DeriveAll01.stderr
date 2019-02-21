@@ -1,0 +1,31 @@
+============ Class instances declared in this module ============
+  instance Eq b => Eq (FooFam Int b)
+    -- Defined at test/Spec/DeriveAll01.hs:11:12
+  instance Read b => Read (FooFam Double b)
+    -- Defined at test/Spec/DeriveAll01.hs:13:12
+  instance Eq (FooFam Float Float)
+    -- Defined at test/Spec/DeriveAll01.hs:15:13
+  instance Ord (FooFam Float Float)
+    -- Defined at test/Spec/DeriveAll01.hs:15:17
+  instance Show (FooFam Float String)
+    -- Defined at test/Spec/DeriveAll01.hs:17:12
+  instance Eq b => Eq (TestNewtype1 Int b)
+    -- Defined in `Spec.DeriveAll01'
+  instance Read b => Read (TestNewtype1 Double b)
+    -- Defined in `Spec.DeriveAll01'
+  instance Eq (TestNewtype1 Float Float)
+    -- Defined in `Spec.DeriveAll01'
+  instance Ord (TestNewtype1 Float Float)
+    -- Defined in `Spec.DeriveAll01'
+  instance Show (TestNewtype1 Float [Char])
+    -- Defined in `Spec.DeriveAll01'
+  instance Eq b => Eq (TestNewtype2 Int b (FooFam Int b))
+    -- Defined in `Spec.DeriveAll01'
+  instance Read b => Read (TestNewtype2 Double b (FooFam Double b))
+    -- Defined in `Spec.DeriveAll01'
+  instance Eq (TestNewtype2 Float Float (FooFam Float Float))
+    -- Defined in `Spec.DeriveAll01'
+  instance Ord (TestNewtype2 Float Float (FooFam Float Float))
+    -- Defined in `Spec.DeriveAll01'
+  instance Show (TestNewtype2 Float [Char] (FooFam Float String))
+    -- Defined in `Spec.DeriveAll01'
