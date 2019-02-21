@@ -1,4 +1,6 @@
-# constraints-deriving
+constraints-deriving
+==================================
+[![Build Status](https://secure.travis-ci.org/achirkin/constraints-deriving.svg)](http://travis-ci.org/achirkin/constraints-deriving)
 
 This project is based on the [constraints](http://hackage.haskell.org/package/constraints) library.
 Module `Data.Constraint.Deriving` provides a GHC Core compiler plugin that generates class instances.
