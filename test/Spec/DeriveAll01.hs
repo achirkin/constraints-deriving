@@ -36,10 +36,10 @@ type instance DeriveContext (TestNewtype2 a b r) = FooFam a b ~ r
 --type instance DeriveContext (TestNewtype3 (Maybe a)) = ()
 --
 --
---{-# ANN type Newclass DeriveAll #-}
---class Newclass a where
+-- {-# ANN type Newclass DeriveAll #-}
+-- class Newclass a where
 --  hereAmI :: a
---
+
 --{-# ANN type Properclass DeriveAll #-}
 --class Properclass a where
 --  p1 :: a
