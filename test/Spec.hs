@@ -146,23 +146,24 @@ trimBS = fst . BS.spanEnd isSpace . snd . BS.span isSpace
 
 -- | compare two ByteStrings such that the first can have wildcards '*'
 eqStar :: ByteString -> ByteString -> Bool
-eqStar = go True
+eqStar template bs
+      -- empty output
+    | BS.null template = BS.null bs
+      -- template allows anything
+    | BS.all ('*' ==) template = True
+      -- template starts with a wildcard
+    | BS.null t1 = eqStar t22
+                 . BS.drop (BS.length t21)
+                 . snd $ BS.breakSubstring t21 bs
+      -- otherwise match prefix
+    | otherwise = case BS.stripPrefix t1 bs of
+        -- could not match
+        Nothing  -> False
+        -- could match a segment, continue
+        Just bs' -> eqStar t2 bs'
   where
-    go atStart template bs
-          -- empty output
-        | BS.null template = BS.null bs
-          -- template allows anything
-        | BS.all ('*' ==) template = True
-          -- when we are at the beginning, we cannot skip part of BS
-        | atStart && not (BS.null b1) = False
-        | otherwise = case BS.stripPrefix t1 b2 of
-            -- could not match
-            Nothing  -> False
-            -- could match a segment, continue
-            Just bs' -> go False t2 bs'
-      where
-        (t1, t2) = BS.dropWhile ('*' ==) <$> BS.span ('*' /=) template
-        (b1, b2) = BS.breakSubstring t1 bs
+    (t1 , t2 ) = BS.span ('*' /=) template
+    (t21, t22) = BS.span ('*' /=) $ BS.dropWhile ('*' ==) t2
 
 
 
