@@ -25,7 +25,7 @@ import           Data.Either         (partitionEithers)
 import qualified Data.Kind           (Constraint, Type)
 import           Data.List           (groupBy, sortOn)
 import           Data.Maybe          (fromMaybe, mapMaybe)
-import           Data.Monoid         (Any (..), First (..))
+import           Data.Monoid         (First (..))
 import qualified FamInstEnv
 import           GhcPlugins          hiding (OverlapMode (..), overlapMode,
                                       (<>))
@@ -103,6 +103,7 @@ deriveAllPass' gs = go (mg_tcs gs) annotateds gs
           , speakN (length ds + 1)
           , ")"
           ]
+      pluginDebug $ "DeriveAll invoked on TyCon" <+> ppr x
       (newInstances, newBinds) <- unzip . fromMaybe [] <$> try (deriveAll x guts)
       -- add new definitions and continue
       go xs (delFromUFM anns x) guts
@@ -138,13 +139,26 @@ deriveAll tyCon guts
   , [dataCon] <- tyConDataCons tyCon
     = do
       dcInsts <- lookupDeriveContextInstances guts tyCon
+      pluginDebug
+        . hang "DeriveAll (1): DeriveContext instances:" 2
+        . vcat $ map ppr dcInsts
       unpackedInsts <-
         if null dcInsts
         then (:[]) <$> mockInstance tyCon
         else return $ map unpackInstance dcInsts
+      pluginDebug
+        . hang "DeriveAll (1): DeriveContext instance parameters and RHSs:" 2
+        . vcat $ map ppr unpackedInsts
       allMatchingTypes <- join <$>
         traverse (lookupMatchingBaseTypes guts tyCon dataCon) unpackedInsts
-      join <$> traverse (lookupMatchingInstances guts) allMatchingTypes
+      pluginDebug
+        . hang "DeriveAll (2): matching base types:" 2
+        . vcat $ map ppr allMatchingTypes
+      r <- join <$> traverse (lookupMatchingInstances guts) allMatchingTypes
+      pluginDebug
+        . hang "DeriveAll (3): matching class instances:" 2
+        . vcat $ map (ppr . fst) r
+      return r
 
 -- not a good newtype declaration
   | otherwise
@@ -248,8 +262,8 @@ cleanupMatchingType :: MatchingType -> MatchingType
 cleanupMatchingType mt0 = go (groupLists $ mtCtxEqs mt0) mt0 { mtCtxEqs = []}
   where
     groupOn f = groupBy (\x y -> f x == f y)
-    flattenSnd []                   = []
-    flattenSnd ([]:xs)              = flattenSnd xs
+    flattenSnd []                 = []
+    flattenSnd ([]:xs)            = flattenSnd xs
     flattenSnd (ts@((tv,_):_):xs) = (tv, map snd ts): flattenSnd xs
     groupLists = flattenSnd . groupOn fst . sortOn fst
 
@@ -542,8 +556,8 @@ expandDataFamily guts fTyCon fTyArgs = do
       | instTyArgs <- align fTyArgs (FamInstEnv.fi_tys inst)
       = (,,) NoOverlap (mkTyConApp fTyCon instTyArgs)
       <$> Unify.tcMatchTys fTyArgs instTyArgs
-    align [] _ = []
-    align xs [] = xs
+    align [] _          = []
+    align xs []         = xs
     align (_:xs) (y:ys) = y : align xs ys
 
 
@@ -556,7 +570,17 @@ expandDataFamily guts fTyCon fTyArgs = do
 lookupMatchingInstances :: ModGuts
                         -> MatchingType
                         -> CorePluginM [(InstEnv.ClsInst, CoreBind)]
-lookupMatchingInstances guts mt = go . InstEnv.instEnvElts $ mg_inst_env guts
+lookupMatchingInstances guts mt
+    | Just bTyCon <- tyConAppTyCon_maybe $ mtBaseType mt = do
+      clsInsts <- flip lookupClsInsts bTyCon <$> getInstEnvs guts
+      pluginDebug $ hang "lookupMatchingInstances candidate instances:" 2 $
+        vcat $ map ppr clsInsts
+      go clsInsts
+    | otherwise = fmap (const []) . pluginDebug $ hcat
+        [ text "DeriveAll.lookupMatchingInstances found no class instances for "
+        , ppr (mtBaseType mt)
+        , text ", because it could not get the type constructor."
+        ]
   where
     go [] = return []
     go (i:is) = matchInstance mt i >>= \case
@@ -573,16 +597,41 @@ lookupMatchingInstances guts mt = go . InstEnv.instEnvElts $ mg_inst_env guts
       where
         newId = InstEnv.instanceDFunId newInst
 
--- | TODO: shall I add theta types? Would need to modify the core expression
+-- TODO: shall I add theta types from MatchingType derive context?
+--            Would need to modify the core expression
+--
+-- TODO: Filter out redundant or unsatisfiable PredTypes
+--       e.g. Ord Char => Ord String
+--       e.g. Ord (IO ()) => Ord [IO ()]
+--
+-- TODO: blacklist some types, e.g. parts of Generics, such as URec
+--
+-- TODO: add an interface to blacklist some classes
 matchInstance :: MatchingType
               -> InstEnv.ClsInst
               -> CorePluginM (Maybe InstEnv.ClsInst)
 matchInstance MatchingType {..} baseInst
-    | (Any True, newTyPams) <- matchTys iTyPams
-    , (_, newDFunTy) <- matchTy (idType baseDFunId)
+    | Just baseSub
+        <- getFirst $ foldMap (First . flip recMatchTyKi mtBaseType) iTyPams
+    , substBaseTy
+        <- replaceTypeOccurrences mtBaseType mtNewType . substTyAddInScope baseSub
+    , newTyPams
+        <- map substBaseTy iTyPams
+    , newTheta
+        <- map (replaceTypeOccurrences mtBaseType mtNewType)
+         $ substTheta baseSub iTheta
+    , newDFunTyNoTyVars
+        <- mkFunTys newTheta
+         $ mkTyConApp (classTyCon iClass) newTyPams
+    , newTyVars
+        <- toposortTyVars $ tyCoVarsOfTypeWellScoped newDFunTyNoTyVars
+    , newDFunTy
+        <- mkSpecForAllTys newTyVars newDFunTyNoTyVars
       = do
       newN <- newName (occNameSpace baseDFunName)
-        $ occNameString baseDFunName ++ newtypeNameS
+        $ occNameString baseDFunName
+          ++ show (getUnique baseDFunId) -- unique per baseDFunId
+          ++ newtypeNameS                -- unique per newType
       let newDFunId = mkExportedLocalId
             (DFunId isNewType) newN newDFunTy
       return . Just $ InstEnv.mkLocalInstance
@@ -590,13 +639,14 @@ matchInstance MatchingType {..} baseInst
                         (toOverlapFlag mtOverlapMode)
                         iTyVars iClass newTyPams
     | otherwise
-      = pure Nothing
+      = do
+      pluginDebug $ hang "Ignored instance" 2
+        (ppr mtBaseType <+> ppr baseInst
+        )
+      pure Nothing
   where
     baseDFunId = InstEnv.instanceDFunId baseInst
-    (iTyVars, iClass, iTyPams) = InstEnv.instanceHead baseInst
-    matchTy = maybeReplaceTypeOccurrences
-          (tyCoVarsOfTypeWellScoped mtNewType) mtBaseType mtNewType
-    matchTys = mapM matchTy
+    (iTyVars, iTheta, iClass, iTyPams) = InstEnv.instanceSig baseInst
     isNewType = isNewTyCon (classTyCon iClass)
     baseDFunName = occName . idName $ baseDFunId
     newtypeNameS = case tyConAppTyCon_maybe mtNewType of

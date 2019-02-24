@@ -1,11 +1,15 @@
 {-# LANGUAGE CPP                 #-}
 {-# LANGUAGE DeriveDataTypeable  #-}
+{-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+#if __GLASGOW_HASKELL__ < 802
+{-# OPTIONS_GHC -fno-warn-redundant-constraints #-}
+#endif
 module Data.Constraint.Deriving.CorePluginM
   ( CorePluginM (), runCorePluginM
   , CorePluginEnv (), CorePluginEnvRef, initCorePluginEnv
-  , liftCoreM, liftIO, lookupName
+  , liftCoreM, runTcM, liftIO, lookupName
     -- * Error handling
   , try, exception
     -- * Accessing read-only on-demand variables
@@ -19,29 +23,43 @@ module Data.Constraint.Deriving.CorePluginM
   , newName, newTyVar
   , bullet, isConstraintKind, getModuleAnns
   , filterAvails
-  , maybeReplaceTypeOccurrences, replaceTypeOccurrences
+  , recMatchTyKi, replaceTypeOccurrences
   , OverlapMode (..), toOverlapFlag
+  , lookupClsInsts, getInstEnvs
+    -- * Debugging
+  , pluginDebug, pluginTrace
+  , HasCallStack
   ) where
 
-
 import qualified Avail
-import           Class         (Class)
-import           Control.Monad (join)
-import           Data.Data     (Data, typeRep)
-import           Data.IORef    (IORef, modifyIORef', newIORef, readIORef)
-import           Data.Monoid   (Any (..))
-import           Data.Proxy    (Proxy (..))
+import           Class               (Class)
+import           Control.Applicative ((<|>))
+import           Control.Monad       (join)
+import           Data.Data           (Data, typeRep)
+import           Data.IORef          (IORef, modifyIORef', newIORef, readIORef)
+import           Data.Monoid         (First (..))
+import           Data.Proxy          (Proxy (..))
 import qualified ErrUtils
 import qualified Finder
-import           GhcPlugins    hiding (OverlapMode (..), overlapMode, (<>))
+import           GhcPlugins          hiding (OverlapMode (..), overlapMode,
+                                      (<>))
 import qualified GhcPlugins
 import qualified IfaceEnv
-import           MonadUtils    (MonadIO (..))
+import qualified InstEnv
+import           MonadUtils          (MonadIO (..))
+import           TcRnMonad           (initTc)
+import           TcRnTypes           (TcM)
+import qualified Unify
 #if __GLASGOW_HASKELL__ < 806
 import qualified Kind      (isConstraintKind)
 import qualified TcRnMonad (initTcForLookup)
 #endif
-
+#if __GLASGOW_HASKELL__ < 802
+import GHC.Stack (HasCallStack)
+#endif
+#if PLUGIN_DEBUG
+import GHC.Stack (withFrozenCallStack)
+#endif
 
 -- | Since I do not have access to the guts of CoreM monad,
 --   I implement a wrapper on top of it here.
@@ -193,6 +211,46 @@ lookupName m occn = do
         $ IfaceEnv.lookupOrigIO hscEnv m occn
 #endif
 
+runTcM :: TcM a -> CorePluginM a
+runTcM mx = do
+  hsce <- liftCoreM getHscEnv
+  modu <- liftCoreM getModule
+  let sp = realSrcLocSpan $ mkRealSrcLoc (fsLit "<CorePluginM.runTcM>") 1 1
+  ((warns, errs), my) <- liftIO $ initTc hsce HsSrcFile False modu sp mx
+  mapM_ pluginWarning $ ErrUtils.pprErrMsgBagWithLoc warns
+  case my of
+    Nothing ->
+      let f []     = pluginError $ text "runTcM failed"
+          f [x]    = pluginError x
+          f (x:xs) = pluginWarning x >> f xs
+      in f $ ErrUtils.pprErrMsgBagWithLoc errs
+    Just y  -> do
+      mapM_ pluginWarning $ ErrUtils.pprErrMsgBagWithLoc errs
+      return y
+
+-- Made this similar to tcRnGetInfo
+--   and a hidden function lookupInsts used there
+lookupClsInsts :: InstEnv.InstEnvs -> TyCon -> [InstEnv.ClsInst]
+lookupClsInsts ie tc =
+  [ ispec        -- Search all
+  | ispec <- InstEnv.instEnvElts (InstEnv.ie_local  ie)
+          ++ InstEnv.instEnvElts (InstEnv.ie_global ie)
+  , InstEnv.instIsVisible (InstEnv.ie_visible ie) ispec
+  , tyConName tc `elemNameSet` InstEnv.orphNamesOfClsInst ispec
+  ]
+
+
+getInstEnvs :: ModGuts -> CorePluginM InstEnv.InstEnvs
+getInstEnvs guts = do
+    hsce <- liftCoreM getHscEnv
+    globalInsts <- liftIO $ eps_inst_env <$> hscEPS hsce
+    return $ InstEnv.InstEnvs
+      { InstEnv.ie_global  = globalInsts
+      , InstEnv.ie_local   = mg_inst_env guts
+      , InstEnv.ie_visible = mkModuleSet . dep_orphs $ mg_deps guts
+      }
+
+
 lookupModule :: ModuleName
              -> [FastString]
              -> CorePluginM Module
@@ -240,6 +298,21 @@ pluginWarning = pluginProblemMsg Nothing ErrUtils.SevWarning
 pluginLocatedWarning :: SrcSpan -> SDoc -> CorePluginM ()
 pluginLocatedWarning loc = pluginProblemMsg (Just loc) ErrUtils.SevWarning
 
+pluginDebug :: SDoc -> CorePluginM ()
+#if PLUGIN_DEBUG
+pluginDebug = pluginProblemMsg Nothing ErrUtils.SevDump
+#else
+pluginDebug = const (pure ())
+#endif
+{-# INLINE pluginDebug #-}
+
+pluginTrace :: HasCallStack => SDoc -> a -> a
+#if PLUGIN_DEBUG
+pluginTrace = withFrozenCallStack pprSTrace
+#else
+pluginTrace = const id
+#endif
+{-# INLINE pluginTrace #-}
 
 
 pluginProblemMsg :: Maybe SrcSpan
@@ -317,38 +390,36 @@ getModuleAnns = go . mg_anns
 
 
 
--- | Look through the type recursively;
---   If the type occurrence found, replace it with the new type.
---   While the type is checked, the function also tracks how type variables
---   are renamed.
---   So the result is the changed type and an indication if it has been changed.
-maybeReplaceTypeOccurrences :: [TyVar] -> Type -> Type -> Type -> (Any, Type)
-maybeReplaceTypeOccurrences tv told tnew = replace
+-- | Similar to Unify.tcMatchTyKis, but looks if there is non-trivial subtype
+--   in the first type that matches the second.
+--   Non-trivial means not a TyVar.
+recMatchTyKi :: Type -> Type -> Maybe TCvSubst
+recMatchTyKi tsearched ttemp = go tsearched
   where
-    mkSubsts xs = mkSubsts' tv $ map mkTyVarTy xs
-    mkSubsts' [] [] = Just emptyTCvSubst
-    mkSubsts' (x:xs) (t:ts) = (\s -> extendTCvSubst s x t)
-                           <$> mkSubsts' xs ts
-    mkSubsts' _ _ = Nothing
-    replace :: Type -> (Any, Type)
-    replace t
-      | tvars <- tyCoVarsOfTypeWellScoped t
-      , Just sub <- mkSubsts tvars
-      , told' <- substTyAddInScope sub told
-      , eqType t told'
-        = (Any True, substTyAddInScope sub tnew)
+    go :: Type -> Maybe TCvSubst
+    go t
+        -- ignore plain TyVars
+      | isTyVarTy t
+        = Nothing
+        -- found a good substitution
+      | Just sub <- matchIt t ttemp
+        = Just sub
         -- split type constructors
-      | Just (tyCon, tys) <- splitTyConApp_maybe t
-        = mkTyConApp tyCon <$> mapM replace tys
+      | Just (_, tys) <- splitTyConApp_maybe t
+        = getFirst $ foldMap (First . go) tys
         -- split foralls
-      | (bndrs@(_:_), t') <- splitForAllTys t
-        = mkSpecForAllTys bndrs <$> replace t'
+      | (_:_, t') <- splitForAllTys t
+        = go t'
         -- split arrow types
       | Just (at, rt) <- splitFunTy_maybe t
-        = mkFunTy <$> replace at <*> replace rt
+        = go at <|> go rt
       | otherwise
-        = (Any False, t)
-
+        = Nothing
+#if __GLASGOW_HASKELL__ >= 802
+    matchIt = Unify.tcMatchTyKi
+#else
+    matchIt = Unify.tcMatchTy
+#endif
 
 -- | Replace all occurrences of one type in another.
 replaceTypeOccurrences :: Type -> Type -> Type -> Type
