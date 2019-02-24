@@ -31,6 +31,12 @@ flags:
     default: false
     manual: true
 
+  debug:
+    description:
+      Show debug trace info (used only for library develpoment)
+    default: false
+    manual: true
+
 ghc-options: -Wall
 
 dependencies:
@@ -53,6 +59,8 @@ library:
   other-modules:
   - Data.Constraint.Deriving.CorePluginM
   when:
+  - condition: flag(debug)
+    cpp-options: -DPLUGIN_DEBUG
   - condition: flag(constraints)
     then:
       dependencies:
