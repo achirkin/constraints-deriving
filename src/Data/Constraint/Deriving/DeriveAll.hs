@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP                #-}
 {-# LANGUAGE DataKinds          #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE KindSignatures     #-}
@@ -23,7 +24,7 @@ import           Control.Monad       (join, unless)
 import           Data.Data           (Data)
 import           Data.Either         (partitionEithers)
 import qualified Data.Kind           (Constraint, Type)
-import           Data.List           (groupBy, sortOn)
+import           Data.List           (groupBy, isPrefixOf, sortOn)
 import           Data.Maybe          (fromMaybe, mapMaybe)
 import           Data.Monoid         (First (..))
 import qualified FamInstEnv
@@ -604,14 +605,14 @@ lookupMatchingInstances guts mt
 --       e.g. Ord Char => Ord String
 --       e.g. Ord (IO ()) => Ord [IO ()]
 --
--- TODO: blacklist some types, e.g. parts of Generics, such as URec
---
 -- TODO: add an interface to blacklist some classes
 matchInstance :: MatchingType
               -> InstEnv.ClsInst
               -> CorePluginM (Maybe InstEnv.ClsInst)
 matchInstance MatchingType {..} baseInst
-    | Just baseSub
+    | not . unwantedName $ getName iClass
+    , all (noneTy unwantedName) iTyPams
+    , Just baseSub
         <- getFirst $ foldMap (First . flip recMatchTyKi mtBaseType) iTyPams
     , substBaseTy
         <- replaceTypeOccurrences mtBaseType mtNewType . substTyAddInScope baseSub
@@ -652,3 +653,24 @@ matchInstance MatchingType {..} baseInst
     newtypeNameS = case tyConAppTyCon_maybe mtNewType of
       Nothing -> "DeriveAll-generated"
       Just tc -> occNameString $ occName $ tyConName tc
+
+
+-- checks if none of the names in the type satisfy the predicate
+noneTy :: (Name -> Bool) -> Type -> Bool
+noneTy f = not . uniqSetAny f . orphNamesOfType
+#if __GLASGOW_HASKELL__ < 802
+  where
+    uniqSetAny g = foldl (\a -> (||) a . g) False
+#endif
+
+unwantedName :: Name -> Bool
+unwantedName n
+  | modName == "GHC.Generics"  = True
+  | modName == "Data.Typeable" = True
+  | modName == "Data.Data"     = True
+  | "Language.Haskell.TH"
+          `isPrefixOf` modName = True
+  | otherwise                  = False
+  where
+    modName = moduleNameString . moduleName $ nameModule n
+    -- valName = occNameString $ getOccName n
