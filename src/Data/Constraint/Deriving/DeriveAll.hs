@@ -545,8 +545,11 @@ expandClosedFamily :: [OverlapMode]
 expandClosedFamily _ [] _ = Nothing
 expandClosedFamily os bs fTyArgs = Just $ mapMaybe go $ zip os bs
   where
-    go (om, cb) = (,,) om (coAxBranchRHS cb)
-          <$> Unify.tcMatchTys fTyArgs (coAxBranchLHS cb)
+    go (om, cb) =
+      let flhs = coAxBranchLHS cb
+          n = length flhs
+          t = foldl mkAppTy (coAxBranchRHS cb) $ drop n fTyArgs
+      in (,,) om t <$> Unify.tcMatchTys (take n fTyArgs) flhs
 
 
 -- | The same as `expandFamily`, but I know already that the family is open.
