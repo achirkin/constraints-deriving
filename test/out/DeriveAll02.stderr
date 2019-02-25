@@ -1,1 +1,14 @@
-*
+============ Class instances declared in this module ============
+  instance Eq b => Eq (FooData a b c)
+    -- Defined at test/Spec/DeriveAll02.hs:*
+  instance Ord b => Ord (FooData a b c)
+    -- Defined at test/Spec/DeriveAll02.hs:*
+  instance (a ~ Int, Show b) => Show (FooData a b c)
+    -- Defined at test/Spec/DeriveAll02.hs:*
+  instance (a ~ Int, Ord b, Show a) =>
+           FooClass (FooData a b c) b Float
+    -- Defined at test/Spec/DeriveAll02.hs:*
+  instance (Show e, Eq b) => Eq (BazTy a b c Double e f)
+    -- Defined in `Spec.DeriveAll02'
+  instance (Show e, Ord b) => Ord (BazTy a b c Double e f)
+    -- Defined in `Spec.DeriveAll02'

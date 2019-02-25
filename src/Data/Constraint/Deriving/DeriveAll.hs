@@ -25,27 +25,32 @@ import           Data.Data           (Data)
 import           Data.Either         (partitionEithers)
 import qualified Data.Kind           (Constraint, Type)
 import           Data.List           (groupBy, isPrefixOf, sortOn)
-import           Data.Maybe          (fromMaybe, mapMaybe)
+import           Data.Maybe          (catMaybes, fromMaybe, mapMaybe)
 import           Data.Monoid         (First (..))
 import qualified FamInstEnv
 import           GhcPlugins          hiding (OverlapMode (..), overlapMode,
                                       (<>))
 import qualified GhcPlugins
+import           InstEnv             (ClsInst, DFunInstType)
 import qualified InstEnv
+import qualified OccName
 import           Panic               (panicDoc)
+import           TcType              (tcSplitDFunTy)
 import qualified Unify
 
 import Data.Constraint.Deriving.CorePluginM
 
--- | A marker to tell the core plugin to derive all visible class instances for a given newtype.
+-- | A marker to tell the core plugin to derive all visible class instances
+--      for a given newtype.
 --
---   The deriving logic is to simply re-use existing instance dictionaries by casting them.
+--   The deriving logic is to simply re-use existing instance dictionaries
+--      by casting them.
 data DeriveAll = DeriveAll
   deriving (Eq, Show, Read, Data)
 
 
--- | This type family is used to impose constraints on type parameters when looking up type instances
---   for the `DeriveAll` core plugin.
+-- | This type family is used to impose constraints on type parameters when
+--   looking up type instances for the `DeriveAll` core plugin.
 --
 --   `DeriveAll` uses only those instances that satisfy the specified constraint.
 --   If the constraint is not specified, it is assumed to be `()`.
@@ -63,7 +68,8 @@ deriveAllPass eref = CoreDoPluginPass "Data.Constraint.Deriving.DeriveAll"
 
   Steps:
 
-  1. Lookup a type or type family instances (branches of CoAxiom) of referenced by the newtype decl
+  1. Lookup a type or type family instances (branches of CoAxiom)
+       of referenced by the newtype decl
 
   2. For every type instance:
 
@@ -71,8 +77,10 @@ deriveAllPass eref = CoreDoPluginPass "Data.Constraint.Deriving.DeriveAll"
 
      2.2 For every class instance:
 
-         * Use mkLocalInstance with parameters of found instance and replaced RHS types
-         * Create a corresponding top-level binding (DFunId), add it to mg_binds of ModGuts.
+         * Use mkLocalInstance with parameters of found instance
+             and replaced RHS types
+         * Create a corresponding top-level binding (DFunId),
+             add it to mg_binds of ModGuts.
          * Add new instance to (mg_insts :: [ClsInst]) of ModGuts
          * Update mg_inst_env of ModGuts accordingly.
 
@@ -127,9 +135,11 @@ deriveAllPass' gs = go (mg_tcs gs) annotateds gs
 
 {- |
   At this point, the plugin has found a candidate type.
-  The first thing I do here is to make sure this is indeed a proper newtype declaration.
+  The first thing I do here is to make sure this
+    is indeed a proper newtype declaration.
   Then, lookup the DeriveContext-specified constraints.
-  Then, enumerate specific type instances (based on constraints and type families in the newtype def.)
+  Then, enumerate specific type instances (based on constraints
+    and type families in the newtype def.)
   Then, lookup all class instances for the found type instances.
  -}
 deriveAll :: TyCon -> ModGuts -> CorePluginM [(InstEnv.ClsInst, CoreBind)]
@@ -178,7 +188,8 @@ deriveAll tyCon guts
               [Just ts] -> ts
               _ -> panicDoc "DeriveAll" $
                 hsep
-                  [ "I faced an impossible type when matching an instance of type family DeriveContext:"
+                  [ "I faced an impossible type when"
+                      <+> "matching an instance of type family DeriveContext:"
                   , ppr i, "at"
                   , ppr $ nameSrcSpan $ getName i]
             rhs = FamInstEnv.fi_rhs i
@@ -189,7 +200,8 @@ deriveAll tyCon guts
 lookupTyFamInstances :: ModGuts -> TyCon -> CorePluginM [FamInstEnv.FamInst]
 lookupTyFamInstances guts fTyCon = do
     pkgFamInstEnv <- liftCoreM getPackageFamInstEnv
-    return $ FamInstEnv.lookupFamInstEnvByTyCon (pkgFamInstEnv, mg_fam_inst_env guts) fTyCon
+    return $ FamInstEnv.lookupFamInstEnvByTyCon
+               (pkgFamInstEnv, mg_fam_inst_env guts) fTyCon
 
 -- | Find all possible instances of DeriveContext type family for a given TyCon
 lookupDeriveContextInstances :: ModGuts -> TyCon -> CorePluginM [FamInstEnv.FamInst]
@@ -209,7 +221,8 @@ data MatchingType
     -- ^ Current list of constraints that I may want to process
     --   during type expansion or substitution
   , mtTheta       :: ThetaType
-    -- ^ Irreducible constraints (I can prepend them in the class instance declarations)
+    -- ^ Irreducible constraints
+    --      (I can prepend them in the class instance declarations)
   , mtOverlapMode :: OverlapMode
     -- ^ How to declare a class instance
   , mtBaseType    :: Type
@@ -258,7 +271,8 @@ replaceTyMatchingType oldt newt MatchingType {..} = MatchingType
   where
     rep = replaceTypeOccurrences oldt newt
 
--- | try to get rid of mtCtxEqs by replacing tyvars by rhs in all components of the MatchingType
+-- | try to get rid of mtCtxEqs by replacing tyvars
+--       by rhs in all components of the MatchingType
 cleanupMatchingType :: MatchingType -> MatchingType
 cleanupMatchingType mt0 = go (groupLists $ mtCtxEqs mt0) mt0 { mtCtxEqs = []}
   where
@@ -275,8 +289,10 @@ cleanupMatchingType mt0 = go (groupLists $ mtCtxEqs mt0) mt0 { mtCtxEqs = []}
     -- TyVar occurs once in mtCtxEqs: I can safely replace it in the type.
     go ((tv,[ty]):xs) mt
       = let sub = extendTCvSubst emptyTCvSubst tv ty
-        in go (map (second (map $ substTyAddInScope sub)) xs) $ substMatchingType sub mt
-    -- TyVar occurs more than once: it may indicate a trivial substition or contradiction
+        in go (map (second (map $ substTyAddInScope sub)) xs)
+              $ substMatchingType sub mt
+    -- TyVar occurs more than once: it may indicate
+    --       a trivial substition or contradiction
     go ((tv, tys):xs) mt
       = case removeEqualTypes tys of
           []  -> go xs mt -- redundant, but compiler is happy
@@ -291,7 +307,8 @@ cleanupMatchingType mt0 = go (groupLists $ mtCtxEqs mt0) mt0 { mtCtxEqs = []}
 
 
 -- | For a given type and constraints, enumerate all possible concrete types;
---   specify overlapping mode if encountered with conflicting instances of closed type families.
+--   specify overlapping mode if encountered with conflicting instances of
+--   closed type families.
 --
 lookupMatchingBaseTypes :: ModGuts
                         -> TyCon
@@ -308,7 +325,8 @@ lookupMatchingBaseTypes guts tyCon dataCon (tys, constraints) = do
           , mtNewType     = newType
           , mtIgnoreList  = []
           }
-    map cleanupMatchingType . take 1000 -- TODO: improve the logic and the termination rule
+    map cleanupMatchingType
+         . take 1000 -- TODO: improve the logic and the termination rule
         <$> go (cleanupMatchingType initMt)
   where
     go :: MatchingType -> CorePluginM [MatchingType]
@@ -349,15 +367,18 @@ lookupMatchingBaseTypes guts tyCon dataCon (tys, constraints) = do
   [(TyVar, Type)] is a list of equality constraints that might help the algorithm.
 
   I want to perform three operations related to this list:
-  [1] Add new tyVar ~ TypeFamily, from type family occurrences in the base or newtypes
+  [1] Add new tyVar ~ TypeFamily, from type family occurrences
+       in the base or newtypes
       (but also check this type family is not present in the eqs?)
-  [2] Remove an item (TypeFamily) from the list by substituting all possible type family instances
+  [2] Remove an item (TypeFamily) from the list by substituting
+        all possible type family instances
       into the the base type, the newtype, and the list of constraints.
-  [3] Remove a non-TypeFamily item (i.e. a proper data/newtype TyCon) by substituting TyVar with
+  [3] Remove a non-TypeFamily item (i.e. a proper data/newtype TyCon)
+      by substituting TyVar with
       this type in the base type, the newtype, and the list of constraints.
 
-  Actions [1,2] may lead to an infinite expansion (recursive families), so I need to bound the number of
-  iterations. An approximate implementation plan:
+  Actions [1,2] may lead to an infinite expansion (recursive families)
+  so I need to bound the number of iterations. An approximate implementation plan:
   1. Apply [1] until no type families present in the basetype or the newtype
   2. Apply [2] or [3] until no esq left???
 
@@ -427,7 +448,8 @@ expandOneFamily guts mt@MatchingType{..} = case mfam of
       ]
 
 
--- -- TODO: Not sure if I need it at all; most of the API functions look through synonyms
+-- -- TODO: Not sure if I need it at all;
+--                   most of the API functions look through synonyms
 -- -- | Try to remove all occurrences of type synonyms.
 -- clearSynonyms :: Type -> Type
 -- clearSynonyms t'
@@ -472,7 +494,8 @@ lookupFamily ignoreLst t
 
 
 -- | Enumerate available family instances and substitute type arguments,
---   such that original type family can be replaced with any of the types in the output list.
+--   such that original type family can be replaced with any
+--     of the types in the output list.
 --   It passes a TCvSubst alongside with the substituted Type.
 --   The substituted Type may have TyVars from the result set of the substitution,
 --   thus I must be careful with using it:
@@ -522,7 +545,8 @@ expandClosedFamily :: [OverlapMode]
 expandClosedFamily _ [] _ = Nothing
 expandClosedFamily os bs fTyArgs = Just $ mapMaybe go $ zip os bs
   where
-    go (om, cb) = (,,) om (coAxBranchRHS cb) <$> Unify.tcMatchTys fTyArgs (coAxBranchLHS cb)
+    go (om, cb) = (,,) om (coAxBranchRHS cb)
+          <$> Unify.tcMatchTys fTyArgs (coAxBranchLHS cb)
 
 
 -- | The same as `expandFamily`, but I know already that the family is open.
@@ -562,6 +586,202 @@ expandDataFamily guts fTyCon fTyArgs = do
     align (_:xs) (y:ys) = y : align xs ys
 
 
+data MatchingInstance = MatchingInstance
+  { miInst       :: ClsInst
+    -- ^ Original found instance for the base type (as declared somewhere);
+    --   It contains the signature and original DFunId
+  , miInstTyVars :: [DFunInstType]
+    -- ^ How TyVars of miOrigBaseClsInst should be replaced to make it as
+    --   an instance for the base type;
+    --   e.g. a TyVar may be instantiated with a concrete type
+    --         (which may or may not contain more type variables).
+  , miTheta      :: [(PredType, MatchingPredType)]
+    -- ^ Original pred types and how they are going to be transformed
+  }
+
+instance Outputable MatchingInstance where
+  ppr MatchingInstance {..} = hang "MatchingInstance" 2 $ vcat
+    [ "{ miInst       =" <+> ppr miInst
+    , ", miInstTyVars =" <+> ppr miInstTyVars
+    , ", miTheta      =" <+> ppr miTheta
+    ]
+
+{-
+Resolving theta types:
+
+1. Class constraints: every time check
+   a. if there is an instance, substitute corresponding DFunIds and be happy.
+   b. if there is no instance and no tyvars, then fail
+   c. otherwise propagate the constraint further.
+
+2. Equality constraints: check equality
+   a. Types are equal (and tyvars inside equal as well):
+      Substitute mkReflCo
+   b. Types are unifiable:
+      Propagate constraint further
+   c. Types are non-unifiable:
+      Discard the whole instance declaration.
+ -}
+data MatchingPredType
+  = MptInstance MatchingInstance
+    -- ^ Found an instance
+  | MptReflexive Coercion
+    -- ^ The equality become reflexive after a tyvar substitution
+  | MptPropagateAs PredType
+    -- ^ Could do nothing, but there is still hope due to the present tyvars
+
+instance Outputable MatchingPredType where
+  ppr (MptInstance x)    = "MptInstance" <+> ppr x
+  ppr (MptReflexive x)   = "MptReflexive" <+> ppr x
+  ppr (MptPropagateAs x) = "MptPropagateAs" <+> ppr x
+
+findInstance :: InstEnv.InstEnvs
+             -> Type
+             -> ClsInst
+             -> Maybe MatchingInstance
+findInstance ie t i
+  | -- Most important: some part of the instance parameters must unify to arg
+    Just sub <- getFirst $ foldMap (First . flip recMatchTyKi t) iTyPams
+    -- substituted type parameters of the class
+  , newTyPams <- map (substTyAddInScope sub) iTyPams
+    -- This tells us how instance tyvars change after matching the type
+    = matchInstance ie iClass newTyPams
+  | otherwise
+    = Nothing
+  where
+    (_, _, iClass, iTyPams) = InstEnv.instanceSig i
+
+
+matchInstance :: InstEnv.InstEnvs
+              -> Class
+              -> [Type]
+              -> Maybe MatchingInstance
+matchInstance ie cls ts
+  | ([(i, tyVarSubs)], _notMatchButUnify, _safeHaskellStuff)
+      <- InstEnv.lookupInstEnv False ie cls ts
+  , (iTyVars, iTheta, _, _) <- InstEnv.instanceSig i
+  , sub <- mkTvSubstPrs
+         . catMaybes $ zipWith (fmap . (,)) iTyVars tyVarSubs
+    = do
+
+    mpts <- traverse (matchPredType ie . substTyAddInScope sub) iTheta
+    return MatchingInstance
+      { miInst = i
+      , miInstTyVars = tyVarSubs
+      , miTheta = zip iTheta mpts
+      }
+  | otherwise
+    = Nothing
+
+matchPredType :: InstEnv.InstEnvs
+              -> PredType
+              -> Maybe MatchingPredType
+matchPredType ie pt = go $ classifyPredType pt
+  where
+    go (ClassPred cls ts)
+      | Just mi <- matchInstance ie cls ts
+                       = Just $ MptInstance mi
+        -- we could not find an instance, but also there are no tyvars (and no hope)
+      | [] <- tyCoVarsOfTypesWellScoped ts
+                       = Nothing
+      | otherwise      = Just $ MptPropagateAs pt
+    go (EqPred rel t1 t2)
+      | eqType t1 t2   = Just . MptReflexive $ case rel of
+                                          NomEq  -> mkReflCo Nominal t1
+                                          ReprEq -> mkReflCo Representational t1
+      | Unify.typesCantMatch [(t1,t2)]
+                       = Nothing
+      | otherwise      = Just $ MptPropagateAs pt
+    go _               = Just $ MptPropagateAs pt
+
+
+type TyExp = (Type, CoreExpr)
+type TyBndr = (Type, CoreBndr)
+
+
+mtmiToExpression :: MatchingType
+                 -> MatchingInstance
+                 -> CorePluginM TyExp
+mtmiToExpression MatchingType {..} mi = do
+  (bndrs, (tOrig, e)) <- miToExpression' [] mi
+  let extraTheta
+            = filter (\t -> not $ any (eqType t . fst) bndrs) mtTheta
+      tRepl = replaceTypeOccurrences mtBaseType mtNewType tOrig
+      tFun  = mkFunTys (extraTheta ++ map fst bndrs) tRepl
+      tvs   = tyCoVarsOfTypeWellScoped tFun
+  return
+    ( mkSpecForAllTys tvs tFun
+    , mkCoreLams (tvs ++ map mkWildValBinder extraTheta ++ map snd bndrs)
+      $ mkCast e
+      $ mkUnsafeCo Representational tOrig tRepl
+    )
+
+
+-- | Construct a core expression and a corresponding type.
+--   It does not bind arguments;
+--   uses only types and vars present in MatchinInstance;
+--   may create a few vars for PredTypes, they are returned in fst.
+miToExpression' :: [TyExp]
+                   -- ^ types and expressions of the PredTypes that are in scope
+                -> MatchingInstance
+                -> CorePluginM ([TyBndr], TyExp)
+                   -- (what to add to lambda, and the final expression)
+miToExpression' availPTs MatchingInstance {..} = do
+    (bndrs, eArgs) <- addArgs availPTs $ map snd miTheta
+    return
+      ( bndrs
+      , ( newIHead
+        , mkCoreApps eDFunWithTyPams eArgs
+        )
+      )
+  where
+    (iTyVars, _, iClass, iTyPams) = InstEnv.instanceSig miInst
+    -- this is the same length as iTyVars, needs to be applied on dFunId
+    tyVarVals = zipWith (fromMaybe . mkTyVarTy) iTyVars miInstTyVars
+    sub = mkTvSubstPrs . catMaybes
+          $ zipWith (fmap . (,)) iTyVars miInstTyVars
+    newTyPams = map (substTyAddInScope sub) iTyPams
+    newIHead = mkTyConApp (classTyCon iClass) newTyPams
+    eDFun = Var $ InstEnv.instanceDFunId miInst
+    eDFunWithTyPams = mkTyApps eDFun tyVarVals
+    addArgs :: [TyExp]
+            -> [MatchingPredType]
+            -> CorePluginM ([TyBndr], [CoreExpr])
+    addArgs _   []    = pure ([], [])
+    addArgs ps (x:xs) = do
+      (tbdrs, e) <- mptToExpression ps x
+      let ps' = ps ++ map (Var <$>) tbdrs
+      (tbdrs', es) <- addArgs ps' xs
+      return
+        ( tbdrs ++ tbdrs'
+        , e:es
+        )
+
+
+-- | Construct an expression to put as a PredType argument.
+--   It may need to produce a new type variable.
+mptToExpression :: [TyExp]
+                -> MatchingPredType
+                -> CorePluginM ([TyBndr], CoreExpr)
+mptToExpression ps (MptInstance mi)
+  = fmap snd <$> miToExpression' ps mi
+mptToExpression _  (MptReflexive c)
+  = pure ([], Coercion c)
+mptToExpression ps (MptPropagateAs pt)
+  = case mte of
+    Just e -> pure ([], e)
+    Nothing -> do
+      loc <- liftCoreM getSrcSpanM
+      u <- getUniqueM
+      let n = mkInternalName u
+                (mkOccName OccName.varName $ "dFunArg_" ++ show u) loc
+          v = mkLocalIdOrCoVar n pt
+      return ([(pt,v)], Var v)
+  where
+      mte = getFirst $ foldMap getSamePT ps
+      getSamePT (t, e)
+        | eqType t pt = First $ Just e
+        | otherwise    = First Nothing
 
 -- | For a given most concrete type, find all possible class instances.
 --   Derive them all by creating a new CoreBind with a casted type.
@@ -570,89 +790,59 @@ expandDataFamily guts fTyCon fTyArgs = do
 --   TyVars of the newType must be a superset of TyVars of the baseType.
 lookupMatchingInstances :: ModGuts
                         -> MatchingType
-                        -> CorePluginM [(InstEnv.ClsInst, CoreBind)]
+                        -> CorePluginM [(ClsInst, CoreBind)]
 lookupMatchingInstances guts mt
     | Just bTyCon <- tyConAppTyCon_maybe $ mtBaseType mt = do
-      clsInsts <- flip lookupClsInsts bTyCon <$> getInstEnvs guts
+      ie <- getInstEnvs guts
+      let clsInsts = lookupClsInsts ie bTyCon
       pluginDebug $ hang "lookupMatchingInstances candidate instances:" 2 $
         vcat $ map ppr clsInsts
-      go clsInsts
+      catMaybes <$> traverse (lookupMatchingInstance ie mt) clsInsts
     | otherwise = fmap (const []) . pluginDebug $ hcat
         [ text "DeriveAll.lookupMatchingInstances found no class instances for "
         , ppr (mtBaseType mt)
         , text ", because it could not get the type constructor."
         ]
-  where
-    go [] = return []
-    go (i:is) = matchInstance mt i >>= \case
-      Nothing -> go is
-      Just ni -> ((ni, mkBind (InstEnv.instanceDFunId i) ni):) <$> go is
 
-    -- Create a new DFunId by casting
-    -- the original DFunId to a required type
-    mkBind :: DFunId -> InstEnv.ClsInst -> CoreBind
-    mkBind oldId newInst
-        = NonRec newId
-        $ mkCast (Var oldId)
-        $ mkUnsafeCo Representational (idType oldId) (idType newId)
-      where
-        newId = InstEnv.instanceDFunId newInst
 
--- TODO: shall I add theta types from MatchingType derive context?
---            Would need to modify the core expression
---
--- TODO: Filter out redundant or unsatisfiable PredTypes
---       e.g. Ord Char => Ord String
---       e.g. Ord (IO ()) => Ord [IO ()]
---
--- TODO: add an interface to blacklist some classes
-matchInstance :: MatchingType
-              -> InstEnv.ClsInst
-              -> CorePluginM (Maybe InstEnv.ClsInst)
-matchInstance MatchingType {..} baseInst
-    | not . unwantedName $ getName iClass
-    , all (noneTy unwantedName) iTyPams
-    , Just baseSub
-        <- getFirst $ foldMap (First . flip recMatchTyKi mtBaseType) iTyPams
-    , substBaseTy
-        <- replaceTypeOccurrences mtBaseType mtNewType . substTyAddInScope baseSub
-    , newTyPams
-        <- map substBaseTy iTyPams
-    , newTheta
-        <- map (replaceTypeOccurrences mtBaseType mtNewType)
-         $ substTheta baseSub iTheta
-    , newDFunTyNoTyVars
-        <- mkFunTys newTheta
-         $ mkTyConApp (classTyCon iClass) newTyPams
-    , newTyVars
-        <- toposortTyVars $ tyCoVarsOfTypeWellScoped newDFunTyNoTyVars
-    , newDFunTy
-        <- mkSpecForAllTys newTyVars newDFunTyNoTyVars
-      = do
-      newN <- newName (occNameSpace baseDFunName)
-        $ occNameString baseDFunName
-          ++ show (getUnique baseDFunId) -- unique per baseDFunId
-          ++ newtypeNameS                -- unique per newType
-      let newDFunId = mkExportedLocalId
-            (DFunId isNewType) newN newDFunTy
-      return . Just $ InstEnv.mkLocalInstance
-                        newDFunId
-                        (toOverlapFlag mtOverlapMode)
-                        iTyVars iClass newTyPams
-    | otherwise
-      = do
-      pluginDebug $ hang "Ignored instance" 2
-        (ppr mtBaseType <+> ppr baseInst
-        )
-      pure Nothing
+lookupMatchingInstance :: InstEnv.InstEnvs
+                       -> MatchingType
+                       -> ClsInst
+                       -> CorePluginM (Maybe (ClsInst, CoreBind))
+lookupMatchingInstance ie mt@MatchingType {..} baseInst
+  | not . unwantedName $ getName iClass
+  , all (noneTy unwantedName) iTyPams
+  , Just mi <- findInstance ie mtBaseType baseInst
+    = do
+    (t, e) <- mtmiToExpression mt mi
+    newN <- newName (occNameSpace baseDFunName)
+      $ occNameString baseDFunName
+        ++ show (getUnique baseDFunId) -- unique per baseDFunId
+        ++ newtypeNameS                -- unique per newType
+    let (newTyVars, _, _, newTyPams) = tcSplitDFunTy t
+        newDFunId = mkExportedLocalId
+          (DFunId isNewType) newN t
+    return $ Just
+      ( InstEnv.mkLocalInstance
+                    newDFunId
+                    (toOverlapFlag mtOverlapMode)
+                    newTyVars iClass newTyPams
+      , NonRec newDFunId e
+      )
+  | otherwise
+    = do
+    pluginDebug $ hang "Ignored instance" 2
+      $ ppr mtBaseType <+> ppr baseInst
+    pure Nothing
   where
     baseDFunId = InstEnv.instanceDFunId baseInst
-    (iTyVars, iTheta, iClass, iTyPams) = InstEnv.instanceSig baseInst
+    (_, _, iClass, iTyPams) = InstEnv.instanceSig baseInst
     isNewType = isNewTyCon (classTyCon iClass)
     baseDFunName = occName . idName $ baseDFunId
     newtypeNameS = case tyConAppTyCon_maybe mtNewType of
       Nothing -> "DeriveAll-generated"
       Just tc -> occNameString $ occName $ tyConName tc
+
 
 
 -- checks if none of the names in the type satisfy the predicate
@@ -670,7 +860,8 @@ unwantedName n
   | modName == "Data.Data"     = True
   | "Language.Haskell.TH"
           `isPrefixOf` modName = True
+  | valName == "Coercible"     = True
   | otherwise                  = False
   where
     modName = moduleNameString . moduleName $ nameModule n
-    -- valName = occNameString $ getOccName n
+    valName = occNameString $ getOccName n
