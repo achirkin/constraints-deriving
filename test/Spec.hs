@@ -152,9 +152,11 @@ eqStar template bs
       -- template allows anything
     | BS.all ('*' ==) template = True
       -- template starts with a wildcard
-    | BS.null t1 = eqStar t22
-                 . BS.drop (BS.length t21)
-                 . snd $ BS.breakSubstring t21 bs
+    | BS.null t1 = case BS.breakSubstring t21 bs of
+        (_, bs')
+          | BS.null bs' -> False
+          | otherwise   -> eqStar t22
+                         $ BS.drop (BS.length t21) bs'
       -- otherwise match prefix
     | otherwise = case BS.stripPrefix t1 bs of
         -- could not match

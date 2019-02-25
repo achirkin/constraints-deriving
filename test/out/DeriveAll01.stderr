@@ -1,14 +1,14 @@
 ============ Class instances declared in this module ============
   instance Eq b => Eq (FooFam Int b)
-    -- Defined at test/Spec/DeriveAll01.hs:11:12
+    -- Defined at test/Spec/DeriveAll01.hs:*
   instance Read b => Read (FooFam Double b)
-    -- Defined at test/Spec/DeriveAll01.hs:13:12
+    -- Defined at test/Spec/DeriveAll01.hs:*
   instance Eq (FooFam Float Float)
-    -- Defined at test/Spec/DeriveAll01.hs:15:13
+    -- Defined at test/Spec/DeriveAll01.hs:*
   instance Ord (FooFam Float Float)
-    -- Defined at test/Spec/DeriveAll01.hs:15:17
+    -- Defined at test/Spec/DeriveAll01.hs:*
   instance Show (FooFam Float String)
-    -- Defined at test/Spec/DeriveAll01.hs:17:12
+    -- Defined at test/Spec/DeriveAll01.hs:*
   instance Eq b => Eq (TestNewtype1 Int b)
     -- Defined in `Spec.DeriveAll01'
   instance Read b => Read (TestNewtype1 Double b)

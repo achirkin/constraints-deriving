@@ -48,5 +48,5 @@ But the whole thing is executed at compile time, so there is no danger of failur
   * [ ] Put the library on hackage
   * [ ] Maybe create new vars in ToInstance instead of replacing existing
   * [x] Keep generated files from Spec folder during tests
-  * [ ] Test if `Coercible basetype newtype` before adding DeriveAll instances
   * [x] Remove generated .hi and .o files from test/Spec
+  * [ ] Add an option to blacklist some classes for DeriveAll
