@@ -46,7 +46,7 @@ But the whole thing is executed at compile time, so there is no danger of failur
   * [x] Refactor `Data.Constraint.Deriving` into submodules.
   * [ ] Finish the readme, show examples
   * [ ] Put the library on hackage
-  * [ ] Maybe create new vars in ToInstance instead of replacing existing
+  * [x] Create new vars in ToInstance instead of replacing existing
   * [x] Keep generated files from Spec folder during tests
   * [x] Remove generated .hi and .o files from test/Spec
   * [ ] Add an option to blacklist some classes for DeriveAll

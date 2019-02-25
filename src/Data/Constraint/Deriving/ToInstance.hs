@@ -16,6 +16,7 @@ import           Data.Maybe          (fromMaybe, isJust)
 import           Data.Monoid         (First (..))
 import           GhcPlugins          hiding (OverlapMode (..), overlapMode)
 import qualified InstEnv
+import qualified OccName
 import           Panic               (panicDoc)
 import qualified Unify
 
@@ -50,7 +51,7 @@ fooNum = mapDict (unsafeDerive Bar) $ case fooSing @a of
 
      Note:
 
-     * `fooNum` must be exported by the module
+     * `fooNum` should be exported by the module
         (otherwise, it may be optimized-out before the core plugin pass);
      * Constraints of the function become constraints of the new instance;
      * The argument of `Dict` must be a single class (no constraint tuples or equality constraints);
@@ -109,7 +110,9 @@ toInstancePass' gs = go (reverse $ mg_binds gs) annotateds gs { mg_binds = []}
           -> go xs (delFromUFM anns x) guts
             { mg_insts    = newInstance : mg_insts guts
             , mg_inst_env = InstEnv.extendInstEnv (mg_inst_env guts) newInstance
-            , mg_binds    = newBind : mg_binds guts
+            , mg_binds    = cbx : newBind : mg_binds guts
+              -- Remove original binding from the export list
+              --                                if it was there.
             , mg_exports  = filterAvails (xn /=) $ mg_exports guts
             }
 
@@ -166,7 +169,7 @@ toInstance (ToInstance omode) (NonRec bindVar bindExpr) = do
                       $ mkUnsafeCo Representational bindBareTy instSig
 
 
-    return $ mkNewInstance omode matchedClass bindVar newExpr
+    mkNewInstance omode matchedClass bindVar newExpr
 
   where
     origBindTy = idType bindVar
@@ -198,25 +201,30 @@ mkNewInstance :: OverlapMode
               -> Class
               -> Id -- ^ Original core binding (with old type)
               -> CoreExpr -- ^ implementation, with a proper new type (instance signature)
-              -> (InstEnv.ClsInst, CoreBind)
-mkNewInstance omode cls bindVar bindExpr
-    = ( InstEnv.mkLocalInstance iDFunId ioflag tvs cls tys
-      , NonRec iDFunId bindExpr)
+              -> CorePluginM (InstEnv.ClsInst, CoreBind)
+mkNewInstance omode cls bindVar bindExpr = do
+    n <- newName OccName.varName
+       $ getOccString bindVar ++ "_ToInstance"
+    let iDFunId = mkExportedLocalId
+          (DFunId $ isNewTyCon (classTyCon cls))
+          n itype
+    return
+      ( InstEnv.mkLocalInstance iDFunId ioflag tvs cls tys
+      , NonRec iDFunId bindExpr
+      )
   where
     ioflag  = toOverlapFlag omode
     itype   = exprType bindExpr
-    iDFunId = flip setIdDetails (DFunId $ isNewTyCon (classTyCon cls))
-            $ setIdType bindVar itype
+
     (tvs, itype') = splitForAllTys itype
     (_, typeBody) = splitFunTys itype'
-    tys = case tyConAppArgs_maybe typeBody of
-      Nothing -> panicDoc "ToInstance" $ hsep
-        [ "Impossible happened:"
-        , "expected a class constructor in mkNewInstance, but got"
-        , ppr typeBody
-        , "at", ppr $ nameSrcSpan $ getName bindVar
-        ]
-      Just ts -> ts
+    tys = fromMaybe aAaaOmg $ tyConAppArgs_maybe typeBody
+    aAaaOmg = panicDoc "ToInstance" $ hsep
+      [ "Impossible happened:"
+      , "expected a class constructor in mkNewInstance, but got"
+      , ppr typeBody
+      , "at", ppr $ nameSrcSpan $ getName bindVar
+      ]
 
 
 -- | Go through type applications and apply dictToBare function on `Dict c` type
