@@ -306,6 +306,31 @@ cleanupMatchingType mt0 = go (groupLists $ mtCtxEqs mt0) mt0 { mtCtxEqs = []}
       | otherwise         = t : removeEqualTypes ts
 
 
+-- | Try to strip trailing TyVars from the base and newtypes,
+--   thus matching higher-kinded types.
+--   This way I can also derive things like Monad & co
+tryHigherRanks :: MatchingType -> [MatchingType]
+tryHigherRanks mt@MatchingType {..}
+  | Just (mtBaseType', bt) <- splitAppTy_maybe mtBaseType
+  , Just (mtNewType' , nt) <- splitAppTy_maybe mtNewType
+  , Just btv <- getTyVar_maybe bt
+  , Just ntv <- getTyVar_maybe nt
+  , btv == ntv
+    -- No constraints or anything else involving our TyVar
+  , not . elem btv
+        . (map fst mtCtxEqs ++)
+        . tyCoVarsOfTypesWellScoped
+      $ [mtBaseType', mtNewType']
+        ++ map snd mtCtxEqs
+        ++ mtTheta
+        ++ mtIgnoreList
+  = let mt' = mt
+          { mtBaseType = mtBaseType'
+          , mtNewType  = mtNewType'
+          }
+    in mt : tryHigherRanks mt'
+tryHigherRanks mt = [mt]
+
 -- | For a given type and constraints, enumerate all possible concrete types;
 --   specify overlapping mode if encountered with conflicting instances of
 --   closed type families.
@@ -325,7 +350,7 @@ lookupMatchingBaseTypes guts tyCon dataCon (tys, constraints) = do
           , mtNewType     = newType
           , mtIgnoreList  = []
           }
-    map cleanupMatchingType
+    (>>= tryHigherRanks . cleanupMatchingType)
          . take 1000 -- TODO: improve the logic and the termination rule
         <$> go (cleanupMatchingType initMt)
   where

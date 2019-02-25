@@ -11,8 +11,10 @@ module Data.Constraint.Deriving
 
 
 
+import Data.List  (sortOn)
 import GhcPlugins hiding (OverlapMode (..), overlapMode)
-import Data.List (sortOn)
+import InstEnv    (is_tys, is_cls)
+import Type       (tyConAppTyCon_maybe)
 
 import Data.Constraint.Deriving.DeriveAll
 import Data.Constraint.Deriving.ToInstance
@@ -60,7 +62,10 @@ dumpInstances :: CoreToDo
 dumpInstances = CoreDoPluginPass "Data.Constraint.Deriving.DumpInstances"
               $ \guts -> guts <$ go (mg_insts guts)
   where
-    locdoc i = (nameSrcSpan $ getName i, ppr i)
+    locdoc i = ( ( getOccString $ is_cls i
+                 , map (fmap getOccString . tyConAppTyCon_maybe)
+                   $ is_tys i
+                 ), ppr i)
     go is = do
       let is' = sortOn fst $ map locdoc is
       putMsg $
