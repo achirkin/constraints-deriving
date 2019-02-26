@@ -68,6 +68,7 @@ main = do
               { log_action = manualLogAction outH errH}
           [ noLoc "-Wall"
           , noLoc "-package ghc"
+          , noLoc "-package base"
           , noLoc "-package constraints-deriving"
           , noLoc $ "-outputdir " ++ toFilePath tempDir]
         _ <- setSessionDynFlags dflags
