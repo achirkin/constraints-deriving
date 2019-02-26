@@ -45,9 +45,11 @@ import           GhcPlugins          hiding (OverlapMode (..), overlapMode,
                                       (<>))
 import qualified GhcPlugins
 import qualified IfaceEnv
+import           InstEnv             (InstEnvs)
 import qualified InstEnv
+import           LoadIface           (checkWiredInTyCon)
 import           MonadUtils          (MonadIO (..))
-import           TcRnMonad           (initTc)
+import           TcRnMonad           (getEps, initTc)
 import           TcRnTypes           (TcM)
 import qualified Unify
 #if __GLASGOW_HASKELL__ < 806
@@ -133,7 +135,7 @@ data CorePluginEnv = CorePluginEnv
 ask :: (CorePluginEnv -> CorePluginM a) -> CorePluginM a
 ask f = join $ CorePluginM $ liftIO . fmap (Just . f) . readIORef
 
--- | Init the `CorePluginM` environment and save it to IORef
+-- | Init the `CorePluginM` environment and save it to IORef.
 initCorePluginEnv :: CoreM (IORef CorePluginEnv)
 initCorePluginEnv = liftIO $ newIORef defCorePluginEnv
 
@@ -199,7 +201,6 @@ defCorePluginEnv = CorePluginEnv
       Just x  <$ liftIO (modifyIORef' eref $ f (pure x))
 
 
-
 lookupName :: Module -> OccName -> CorePluginM Name
 lookupName m occn = do
     hscEnv <- liftCoreM getHscEnv
@@ -230,7 +231,7 @@ runTcM mx = do
 
 -- Made this similar to tcRnGetInfo
 --   and a hidden function lookupInsts used there
-lookupClsInsts :: InstEnv.InstEnvs -> TyCon -> [InstEnv.ClsInst]
+lookupClsInsts :: InstEnvs -> TyCon -> [InstEnv.ClsInst]
 lookupClsInsts ie tc =
   [ ispec        -- Search all
   | ispec <- InstEnv.instEnvElts (InstEnv.ie_local  ie)
@@ -239,11 +240,18 @@ lookupClsInsts ie tc =
   , tyConName tc `elemNameSet` InstEnv.orphNamesOfClsInst ispec
   ]
 
-
-getInstEnvs :: ModGuts -> CorePluginM InstEnv.InstEnvs
-getInstEnvs guts = do
-    hsce <- liftCoreM getHscEnv
-    globalInsts <- liftIO $ eps_inst_env <$> hscEPS hsce
+getInstEnvs :: ModGuts
+               -- ^ Need to get local instance environment
+            -> Maybe TyCon
+               -- ^ Try to force load a type to make sure it has pulled
+               --   instances from its depentencies
+            -> CorePluginM InstEnv.InstEnvs
+getInstEnvs guts mtc = do
+    globalInsts <- runTcM $ do
+      -- This was a huge pita: need to make sure the base type loaded
+      --  if it is a wired-in type. Otherwise, some instances are missing.
+      mapM_ checkWiredInTyCon mtc
+      eps_inst_env <$> getEps
     return $ InstEnv.InstEnvs
       { InstEnv.ie_global  = globalInsts
       , InstEnv.ie_local   = mg_inst_env guts

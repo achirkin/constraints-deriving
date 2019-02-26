@@ -821,7 +821,7 @@ lookupMatchingInstances :: ModGuts
                         -> CorePluginM [(ClsInst, CoreBind)]
 lookupMatchingInstances guts mt
     | Just bTyCon <- tyConAppTyCon_maybe $ mtBaseType mt = do
-      ie <- getInstEnvs guts
+      ie <- getInstEnvs guts $ Just bTyCon
       let clsInsts = lookupClsInsts ie bTyCon
       pluginDebug $ hang "lookupMatchingInstances candidate instances:" 2 $
         vcat $ map ppr clsInsts
