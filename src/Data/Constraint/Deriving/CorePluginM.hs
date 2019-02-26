@@ -216,16 +216,29 @@ defCorePluginEnv = CorePluginEnv
                   ]
         modsDirect <- fmap catMaybes . traverse (lookupDep hscEnv) $
           ms_srcimps mdesc ++ ms_textual_imps mdesc
-        let mSetDirect = mkModuleSet modsDirect
-        mods <- runTcM $ do
-          ifs <- traverse (LoadIface.loadModuleInterface reason) modsDirect
-          let newMods = do
-                i <- ifs
-                (dname, False) <- dep_mods $ mi_deps i
-                mkModule (moduleUnitId $ mi_module i) dname
-                  : dep_orphs (mi_deps i)
-              mSetAll = mSetDirect `mappend` mkModuleSet newMods
-          return $ moduleSetElts mSetAll
+        let mSetDirect = mkUniqSet modsDirect
+            umods [] = []
+            umods (UsagePackageModule {usg_mod = um} : us) = um : umods us
+            umods (_:us) = umods us
+#if __GLASGOW_HASKELL__ >= 802
+            backToList = nonDetEltsUniqSet
+#else
+            backToList = uniqSetToList
+#endif
+            loadRec ms = do
+              ifs <- traverse (LoadIface.loadModuleInterface reason)
+                      $ backToList ms
+              let newMods = do
+                    i <- ifs
+                    [ mkModule (moduleUnitId $ mi_module i) dname
+                      | (dname, False) <- dep_mods $ mi_deps i]
+                      ++ umods (mi_usages i)
+                      ++ dep_orphs (mi_deps i)
+                  ms' = mkUniqSet newMods `minusUniqSet` ms
+              if isEmptyUniqSet ms'
+              then return ms
+              else loadRec $ ms `unionUniqSets` ms'
+        mods <- runTcM $ backToList <$> loadRec mSetDirect
         saveAndReturn (Just mods) $ \a e -> e { moduleDeps = a }
     }
   where
