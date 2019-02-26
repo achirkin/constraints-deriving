@@ -15,7 +15,7 @@ module Data.Constraint.Deriving.CorePluginM
     -- * Accessing read-only on-demand variables
   , ask
   , tyConDict, tyConBareConstraint, tyConDeriveContext
-  , funDictToBare, tyEmptyConstraint, classTypeEq
+  , funDictToBare, tyEmptyConstraint, classTypeEq, moduleDeps
     -- * Reporting
   , pluginWarning, pluginLocatedWarning
   , pluginError, pluginLocatedError
@@ -37,6 +37,7 @@ import           Control.Applicative ((<|>))
 import           Control.Monad       (join)
 import           Data.Data           (Data, typeRep)
 import           Data.IORef          (IORef, modifyIORef', newIORef, readIORef)
+import           Data.Maybe          (catMaybes)
 import           Data.Monoid         (First (..))
 import           Data.Proxy          (Proxy (..))
 import qualified ErrUtils
@@ -47,7 +48,7 @@ import qualified GhcPlugins
 import qualified IfaceEnv
 import           InstEnv             (InstEnvs)
 import qualified InstEnv
-import           LoadIface           (checkWiredInTyCon)
+import qualified LoadIface
 import           MonadUtils          (MonadIO (..))
 import           TcRnMonad           (getEps, initTc)
 import           TcRnTypes           (TcM)
@@ -129,6 +130,7 @@ data CorePluginEnv = CorePluginEnv
   , funDictToBare       :: CorePluginM Id
   , tyEmptyConstraint   :: CorePluginM Type
   , classTypeEq         :: CorePluginM Class
+  , moduleDeps          :: CorePluginM [Module]
   }
 
 -- | Ask a field of the CorePluginEnv environment.
@@ -193,13 +195,54 @@ defCorePluginEnv = CorePluginEnv
             -> return cls
           _ -> exception
         saveAndReturn mc $ \a e -> e { classTypeEq = a }
+
+    , moduleDeps = do
+        hscEnv <- liftCoreM getHscEnv
+        mn <- moduleName <$> liftCoreM getModule
+        mdesc
+          <- case [ m | m <- mgModSummaries $ hsc_mod_graph hscEnv
+                      , ms_mod_name m == mn
+                      , not (isBootSummary m) ] of
+          []   -> pluginError $ hsep
+                  [ text "Could not find"
+                  , ppr mn
+                  , text "in the module graph."
+                  ]
+          [md] -> return md
+          _    -> pluginError $ hsep
+                  [ text "Found multiple modules"
+                  , ppr mn
+                  , text "in the module graph."
+                  ]
+        modsDirect <- fmap catMaybes . traverse (lookupDep hscEnv) $
+          ms_srcimps mdesc ++ ms_textual_imps mdesc
+        let mSetDirect = mkModuleSet modsDirect
+        mods <- runTcM $ do
+          ifs <- traverse (LoadIface.loadModuleInterface reason) modsDirect
+          let newMods = do
+                i <- ifs
+                (dname, False) <- dep_mods $ mi_deps i
+                mkModule (moduleUnitId $ mi_module i) dname
+                  : dep_orphs (mi_deps i)
+              mSetAll = mSetDirect `mappend` mkModuleSet newMods
+          return $ moduleSetElts mSetAll
+        saveAndReturn (Just mods) $ \a e -> e { moduleDeps = a }
     }
   where
     saveAndReturn Nothing  f = CorePluginM $ \eref ->
       Nothing <$ liftIO (modifyIORef' eref $ f exception)
     saveAndReturn (Just x) f = CorePluginM $ \eref ->
       Just x  <$ liftIO (modifyIORef' eref $ f (pure x))
-
+    maybeFound (Found _ m) = Just m
+    maybeFound _           = Nothing
+    lookupDep hsce (mpn, mn)
+      = maybeFound <$>
+        liftIO (Finder.findImportedModule hsce (unLoc mn) mpn)
+    reason = text $ "Constraints.Deriving.CorePluginM "
+                               ++ "itinialization of global InstEnv"
+#if __GLASGOW_HASKELL__ < 804
+    mgModSummaries = id
+#endif
 
 lookupName :: Module -> OccName -> CorePluginM Name
 lookupName m occn = do
@@ -241,23 +284,21 @@ lookupClsInsts ie tc =
   ]
 
 getInstEnvs :: ModGuts
-               -- ^ Need to get local instance environment
-            -> Maybe TyCon
-               -- ^ Try to force load a type to make sure it has pulled
-               --   instances from its depentencies
             -> CorePluginM InstEnv.InstEnvs
-getInstEnvs guts mtc = do
+getInstEnvs guts = do
+    mdeps <- ask moduleDeps
     globalInsts <- runTcM $ do
-      -- This was a huge pita: need to make sure the base type loaded
-      --  if it is a wired-in type. Otherwise, some instances are missing.
-      mapM_ checkWiredInTyCon mtc
+      LoadIface.loadModuleInterfaces reason mdeps
       eps_inst_env <$> getEps
+
     return $ InstEnv.InstEnvs
       { InstEnv.ie_global  = globalInsts
       , InstEnv.ie_local   = mg_inst_env guts
       , InstEnv.ie_visible = mkModuleSet . dep_orphs $ mg_deps guts
       }
-
+  where
+    reason = text $ "Constraints.Deriving.CorePluginM "
+                               ++ "itinialization of global InstEnv"
 
 lookupModule :: ModuleName
              -> [FastString]
