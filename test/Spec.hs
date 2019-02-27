@@ -67,6 +67,7 @@ main = do
         (dflags, _, _) <- parseDynamicFlags dflags'
               { log_action = manualLogAction outH errH}
           [ noLoc "-Wall"
+          , noLoc "-hide-all-packages"
           , noLoc "-package ghc"
           , noLoc "-package base"
           , noLoc "-package constraints-deriving"
