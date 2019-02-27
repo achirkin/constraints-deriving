@@ -9,13 +9,8 @@
   instance Foldable (BazTy MaybeTy)*
   instance Functor (BazTy ListTy)*
   instance Functor (BazTy MaybeTy)*
-  instance *Data.String.IsString (BazTy ListTy a)*
   instance *Monad (BazTy ListTy)*
   instance *Monad (BazTy MaybeTy)*
-  instance *MonadFail (BazTy ListTy)*
-  instance *MonadFail (BazTy MaybeTy)*
-  instance *MonadFix (BazTy ListTy)*
-  instance *MonadFix (BazTy MaybeTy)*
   instance *MonadPlus (BazTy ListTy)*
   instance *MonadPlus (BazTy MaybeTy)*
   instance *Monoid (BazTy ListTy a)*
@@ -24,8 +19,6 @@
   instance Ord a => Ord (BazTy MaybeTy a)*
   instance Read a => Read (BazTy ListTy a)*
   instance Read a => Read (BazTy MaybeTy a)*
-  instance *Semigroup (BazTy ListTy a)*
-  instance *Semigroup (BazTy MaybeTy a)*
   instance Show a => Show (BazTy ListTy a)*
   instance Show a => Show (BazTy MaybeTy a)*
   instance Traversable (BazTy ListTy)*
