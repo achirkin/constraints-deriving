@@ -15,7 +15,7 @@ module Data.Constraint.Deriving.CorePluginM
     -- * Accessing read-only on-demand variables
   , ask
   , tyConDict, tyConBareConstraint, tyConDeriveContext
-  , funDictToBare, tyEmptyConstraint, classTypeEq, moduleDeps
+  , funDictToBare, tyEmptyConstraint, classTypeEq
     -- * Reporting
   , pluginWarning, pluginLocatedWarning
   , pluginError, pluginLocatedError
@@ -46,7 +46,7 @@ import           GhcPlugins          hiding (OverlapMode (..), overlapMode,
                                       (<>))
 import qualified GhcPlugins
 import qualified IfaceEnv
-import           InstEnv             (InstEnvs)
+import           InstEnv             (InstEnv, InstEnvs)
 import qualified InstEnv
 import qualified LoadIface
 import           MonadUtils          (MonadIO (..))
@@ -130,7 +130,7 @@ data CorePluginEnv = CorePluginEnv
   , funDictToBare       :: CorePluginM Id
   , tyEmptyConstraint   :: CorePluginM Type
   , classTypeEq         :: CorePluginM Class
-  , moduleDeps          :: CorePluginM [Module]
+  , globalInstEnv       :: CorePluginM InstEnv
   }
 
 -- | Ask a field of the CorePluginEnv environment.
@@ -139,7 +139,14 @@ ask f = join $ CorePluginM $ liftIO . fmap (Just . f) . readIORef
 
 -- | Init the `CorePluginM` environment and save it to IORef.
 initCorePluginEnv :: CoreM (IORef CorePluginEnv)
-initCorePluginEnv = liftIO $ newIORef defCorePluginEnv
+initCorePluginEnv = do
+  env <- liftIO $ newIORef defCorePluginEnv
+  -- need to force globalInstEnv as early as possible to make sure
+  -- that ExternalPackageState var is not yet contaminated with
+  -- many unrelated modules.
+  gie <- runCorePluginM (ask globalInstEnv) env
+  seq gie $ return env
+
 
 -- | Lookup necessary environment components on demand.
 defCorePluginEnv :: CorePluginEnv
@@ -196,9 +203,10 @@ defCorePluginEnv = CorePluginEnv
           _ -> exception
         saveAndReturn mc $ \a e -> e { classTypeEq = a }
 
-    , moduleDeps = do
+    , globalInstEnv = do
         hscEnv <- liftCoreM getHscEnv
         mn <- moduleName <$> liftCoreM getModule
+
         mdesc
           <- case [ m | m <- mgModSummaries $ hsc_mod_graph hscEnv
                       , ms_mod_name m == mn
@@ -214,32 +222,35 @@ defCorePluginEnv = CorePluginEnv
                   , ppr mn
                   , text "in the module graph."
                   ]
-        modsDirect <- fmap catMaybes . traverse (lookupDep hscEnv) $
-          ms_srcimps mdesc ++ ms_textual_imps mdesc
-        let mSetDirect = mkUniqSet modsDirect
-            umods [] = []
-            umods (UsagePackageModule {usg_mod = um} : us) = um : umods us
-            umods (_:us) = umods us
-#if __GLASGOW_HASKELL__ >= 802
-            backToList = nonDetEltsUniqSet
-#else
-            backToList = uniqSetToList
-#endif
+        -- direct module dependencies
+        modsDirect <- fmap catMaybes
+          . traverse (lookupDep hscEnv)
+          $ ms_srcimps mdesc ++ ms_textual_imps mdesc
+        let -- direct dependencies; must be in the explicit depenencies anyway
+            mSetDirect = mkUniqSet $ filter notMyOwn modsDirect
+            -- Modules that we definitely need to look through,
+            -- even if they are from other, hidden packages
+            reexportedDeps i = mkUniqSet $ do
+              a@Avail.AvailTC{} <- mi_exports i
+              let m = nameModule $ Avail.availName a
+              [ m | m /= mi_module i, notMyOwn m]
+            -- Load reexportedDeps recursively.
+            -- This enumerate all modules that export some type constructors
+            -- visible from the current module;
+            -- this includes our base types and also all classes in scope.
             loadRec ms = do
               ifs <- traverse (LoadIface.loadModuleInterface reason)
                       $ backToList ms
-              let newMods = do
-                    i <- ifs
-                    [ mkModule (moduleUnitId $ mi_module i) dname
-                      | (dname, False) <- dep_mods $ mi_deps i]
-                      ++ umods (mi_usages i)
-                      ++ dep_orphs (mi_deps i)
-                  ms' = mkUniqSet newMods `minusUniqSet` ms
-              if isEmptyUniqSet ms'
+              let ms' = foldr (unionUniqSets . reexportedDeps) ms ifs
+              if isEmptyUniqSet $ ms' `minusUniqSet` ms
               then return ms
-              else loadRec $ ms `unionUniqSets` ms'
-        mods <- runTcM $ backToList <$> loadRec mSetDirect
-        saveAndReturn (Just mods) $ \a e -> e { moduleDeps = a }
+              else loadRec ms'
+        gie <- runTcM $ do
+          mods <- backToList <$> loadRec mSetDirect
+          LoadIface.loadModuleInterfaces reason mods
+          eps_inst_env <$> getEps
+        saveAndReturn (Just gie) $ \a e -> e { globalInstEnv = a }
+
     }
   where
     saveAndReturn Nothing  f = CorePluginM $ \eref ->
@@ -253,9 +264,23 @@ defCorePluginEnv = CorePluginEnv
         liftIO (Finder.findImportedModule hsce (unLoc mn) mpn)
     reason = text $ "Constraints.Deriving.CorePluginM "
                                ++ "itinialization of global InstEnv"
+    -- Ignore my own modules: they do not contain any classes.
+    notMyOwn m = moduleNameString (moduleName m) `notElem`
+      [ "Data.Constraint.Deriving"
+      , "Data.Constraint.Deriving.DeriveAll"
+      , "Data.Constraint.Deriving.ToInstance"
+      , "Data.Constraint.Deriving.ToInstance"
+      , "Data.Constraint.Deriving.CorePluginM"
+      ]
 #if __GLASGOW_HASKELL__ < 804
     mgModSummaries = id
 #endif
+#if __GLASGOW_HASKELL__ >= 802
+    backToList = nonDetEltsUniqSet
+#else
+    backToList = uniqSetToList
+#endif
+
 
 lookupName :: Module -> OccName -> CorePluginM Name
 lookupName m occn = do
@@ -299,19 +324,12 @@ lookupClsInsts ie tc =
 getInstEnvs :: ModGuts
             -> CorePluginM InstEnv.InstEnvs
 getInstEnvs guts = do
-    mdeps <- ask moduleDeps
-    globalInsts <- runTcM $ do
-      LoadIface.loadModuleInterfaces reason mdeps
-      eps_inst_env <$> getEps
-
-    return $ InstEnv.InstEnvs
-      { InstEnv.ie_global  = globalInsts
-      , InstEnv.ie_local   = mg_inst_env guts
-      , InstEnv.ie_visible = mkModuleSet . dep_orphs $ mg_deps guts
-      }
-  where
-    reason = text $ "Constraints.Deriving.CorePluginM "
-                               ++ "itinialization of global InstEnv"
+  globalInsts <- ask globalInstEnv
+  return $ InstEnv.InstEnvs
+    { InstEnv.ie_global  = globalInsts
+    , InstEnv.ie_local   = mg_inst_env guts
+    , InstEnv.ie_visible = mkModuleSet . dep_orphs $ mg_deps guts
+    }
 
 lookupModule :: ModuleName
              -> [FastString]

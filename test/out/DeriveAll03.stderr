@@ -5,13 +5,10 @@
   instance *Applicative (BazTy MaybeTy)*
   instance Eq a => Eq (BazTy ListTy a)*
   instance Eq a => Eq (BazTy MaybeTy a)*
-  instance *Eq1 (BazTy ListTy)*
-  instance *Eq1 (BazTy MaybeTy)*
   instance Foldable (BazTy ListTy)*
   instance Foldable (BazTy MaybeTy)*
   instance Functor (BazTy ListTy)*
   instance Functor (BazTy MaybeTy)*
-  instance *IsList (BazTy ListTy a)*
   instance *Data.String.IsString (BazTy ListTy a)*
   instance *Monad (BazTy ListTy)*
   instance *Monad (BazTy MaybeTy)*
@@ -21,23 +18,15 @@
   instance *MonadFix (BazTy MaybeTy)*
   instance *MonadPlus (BazTy ListTy)*
   instance *MonadPlus (BazTy MaybeTy)*
-  instance *MonadZip (BazTy ListTy)*
-  instance *MonadZip (BazTy MaybeTy)*
   instance *Monoid (BazTy ListTy a)*
   instance *Monoid (BazTy MaybeTy a)*
   instance Ord a => Ord (BazTy ListTy a)*
   instance Ord a => Ord (BazTy MaybeTy a)*
-  instance *Ord1 (BazTy ListTy)*
-  instance *Ord1 (BazTy MaybeTy)*
   instance Read a => Read (BazTy ListTy a)*
   instance Read a => Read (BazTy MaybeTy a)*
-  instance *Read1 (BazTy ListTy)*
-  instance *Read1 (BazTy MaybeTy)*
   instance *Semigroup (BazTy ListTy a)*
   instance *Semigroup (BazTy MaybeTy a)*
   instance Show a => Show (BazTy ListTy a)*
   instance Show a => Show (BazTy MaybeTy a)*
-  instance *Show1 (BazTy ListTy)*
-  instance *Show1 (BazTy MaybeTy)*
   instance Traversable (BazTy ListTy)*
   instance Traversable (BazTy MaybeTy)*
