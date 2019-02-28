@@ -10,7 +10,6 @@
 {-# LANGUAGE RankNTypes             #-}
 {-# LANGUAGE ScopedTypeVariables    #-}
 {-# LANGUAGE StandaloneDeriving     #-}
-{-# LANGUAGE TypeApplications       #-}
 {-# LANGUAGE TypeFamilies           #-}
 {-# LANGUAGE TypeFamilyDependencies #-}
 {-# LANGUAGE TypeOperators          #-}
@@ -19,8 +18,7 @@
 module Lib.BackendFamily
   ( UnitBase (..), ScalarBase (..), Vec2Base (..), ListBase (..)
   , Backend, DataElemType, DataDims
-  , KnownBackend (..)
-  , BackendSing (), reifyBackendSing
+  , KnownBackend ()
   , inferBackendInstance
   ) where
 
@@ -122,15 +120,6 @@ instance (Num t, KnownNat n) => Monoid (ListBase t n) where
   mappend = (<>)
 
 
-reifyBackendSing :: forall backend r
-                  . BackendSing backend -> ( KnownBackend backend => r) -> r
-reifyBackendSing as k
-  = unsafeCoerce# (MagicBackendSing k :: MagicBackendSing backend r) as
-{-# INLINE reifyBackendSing #-}
-newtype MagicBackendSing (backend :: Type) (r :: Type)
-  = MagicBackendSing (KnownBackend backend => r)
-
-
 
 instance KnownBackend (UnitBase t) where
     bSing = BS0
@@ -146,7 +135,8 @@ instance KnownBackend (ListBase t n) where
       Dict -> BSn
 
 
-
+-- This function determines the logic of instance selection
+-- for the type  b
 inferBackendInstance
   :: forall b c
    . ( KnownBackend b
@@ -162,4 +152,3 @@ inferBackendInstance = case (bSing :: BackendSing b) of
     BS2 -> trace "---------- Selecting Vec2Base" Dict
     BSn -> trace "---------- Selecting ListBase" Dict
 {-# INLINE inferBackendInstance #-}
-

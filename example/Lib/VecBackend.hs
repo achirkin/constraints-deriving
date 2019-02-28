@@ -14,12 +14,9 @@
 {-# LANGUAGE TypeOperators        #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -fplugin Data.Constraint.Deriving #-}
+{-# OPTIONS_GHC -fplugin-opt Data.Constraint.Deriving:dump-instances #-}
 
-module Lib.VecBackend
-  -- ( VecBackend(..)
-  -- , inferEq, inferOrd, inferShow, inferSemigroup, inferMonoid
-  -- )
-  where
+module Lib.VecBackend where
 
 
 import           Data.Constraint
@@ -37,8 +34,6 @@ import           Lib.BackendFamily
 
 
 {-# ANN type VecBackend DeriveAll #-}
-{-# ANN type VecBackend DeriveAll #-}
-{-# ANN VecBackend DeriveAll #-}
 type role VecBackend phantom phantom representational
 -- I need two layers of wrappers to provide default overlappable instances to
 -- all type classes using KnownBackend mechanics.
@@ -56,44 +51,6 @@ type instance DataDims (VecBackend _  n _) = n
 -- because the newtype declaration is too general without these additional constraints.
 type instance DeriveContext (VecBackend t n b) = b ~ Backend t n
 
-{-# ANN type TestData DeriveAll #-}
-{-# ANN type TestNewtype DeriveAll #-}
-{-# ANN type TestNewtype2 DeriveAll #-}
-{-# ANN TestNewtype2C DeriveAll #-}
-{-# ANN TestNewtype2C DeriveAll #-}
-
-data TestData a = TData a a Int
-newtype TestNewtype t n = TestNewtypeC (Backend t n)
-newtype TestNewtype2 t n b = TestNewtype2C (Backend t n)
-type instance DeriveContext (TestNewtype2 t n b) = Backend t n ~ b
-
-{-# ANN type TestNewtype3 DeriveAll #-}
-newtype TestNewtype3 a = TestNewtype3C a
--- Enumerate specific instances
-type instance DeriveContext (TestNewtype3 Bool) = ()
-type instance DeriveContext (TestNewtype3 Int)  = ()
-type instance DeriveContext (TestNewtype3 (Maybe a)) = ()
-type instance DeriveContext (TestNewtype3 (VecBackend t n b)) = b ~ Backend t n
-
-
-{-# ANN type Newclass DeriveAll #-}
-class Newclass a where
-  hereAmI :: a
-
-{-# ANN type Properclass DeriveAll #-}
-class Properclass a where
-  p1 :: a
-  p2 :: (a, a)
-
-{-# ANN type TestTypeType DeriveAll #-}
-type TestTypeType t n = TestNewtype t n
-
-{-# ANN type TestTF DeriveAll #-}
-type family TestTF t (n :: Nat)
-type instance TestTF t n = TestNewtype t n
-
--- invalid annotation for testing purposes
-{-# ANN type TestTF (ToInstance NoOverlap) #-}
 
 
 {-# ANN inferEq (ToInstance Overlappable) #-}
@@ -130,11 +87,16 @@ inferMonoid = mapDict toVecBackend
             . mapDict (Sub inferBackendInstance)
             $ inferBase @t @n @b undefined
 
-inferBase :: VecBackend t n b -> Dict (b ~ Backend t n, t ~ DataElemType b, n ~ DataDims b)
+-- This is the rule that cannot be encoded in the type system, but enforced
+-- as an invariant: VecBackend t n b implies DeriveContext t n b
+inferBase :: VecBackend t n b
+          -> Dict (b ~ Backend t n, t ~ DataElemType b, n ~ DataDims b)
 inferBase _ = unsafeCoerce
   (Dict :: Dict (b ~ b, t ~ t, n ~ n) )
 {-# INLINE inferBase #-}
 
+-- VecBackend is the newtype wrapper over b.
+-- It has the same represenation and I expect it to have the same instance behavior.
 toVecBackend :: forall c t n b . c b :- c (VecBackend t n b)
 toVecBackend = unsafeDerive VecBackend
 {-# INLINE toVecBackend #-}
