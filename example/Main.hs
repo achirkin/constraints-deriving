@@ -19,22 +19,8 @@ main = do
     case sdf2 of
       SomeVector x -> print $ mappend x x <> mempty
     case sdf7 of
-      SomeVector x -> print $ f x
+      SomeVector x -> print $ x <> x <> x <> mempty <> x
   where
     sdf2 = SomeVector $ Vec (Vec2Base 2 (6 :: Int))
     sdf7 = SomeVector
       (Vec (ListBase [1,2,3,4,5,16,92]) :: Vector Float 7)
-
-
-
-f :: ( Semigroup t, Monoid t) => t -> t
-f x = x <> x <> x <> mempty <> x
-{-
- Pragma NOINLINE reduces the number of calls to the dictionary function.
- With optimization enabled, this is 6 vs 3.
- Assuming one call is for Show instance, f invokes the DFun  once for each type.
-
- If the function is inlined,  DFun seems to be invoked every time the Monoid
- or Semigroup functions are called.
- -}
-{-# NOINLINE f #-}
