@@ -22,6 +22,7 @@ import           Path
 import           Path.IO
 import           System.Exit
 import           System.IO
+import           System.FilePath       (isPathSeparator)
 
 -- | Folder with test modules to be compiled
 specDir :: Path Rel Dir
@@ -144,7 +145,10 @@ getSameBytes template handle =
 
 -- | Eliminate whitespace characters on both sides of a ByteString
 trimBS :: ByteString -> ByteString
-trimBS = fst . BS.spanEnd isSpace . snd . BS.span isSpace
+trimBS = BS.map f . fst . BS.spanEnd isSpace . snd . BS.span isSpace
+  where
+    -- fix tests for Windows
+    f c = if isPathSeparator c then '/' else c
 
 -- | compare two ByteStrings such that the first can have wildcards '*'
 eqStar :: ByteString -> ByteString -> Bool

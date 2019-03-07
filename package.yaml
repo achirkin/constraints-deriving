@@ -78,6 +78,7 @@ tests:
     other-modules:       []
     dependencies:
     - constraints-deriving
+    - filepath
     - ghc
     - ghc-paths
     - path
