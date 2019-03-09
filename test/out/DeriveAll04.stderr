@@ -1,0 +1,7 @@
+============ Class instances declared in this module ============
+  instance Eq A -- Defined at test/Spec/DeriveAll04.hs:*
+  instance Eq B -- Defined at test/Spec/DeriveAll04.hs:*
+  instance [overlapping] Eq (BazTy A)
+    -- Defined in `Spec.DeriveAll04'
+  instance [incoherent] Eq (BazTy fresh_*)
+    -- Defined in `Spec.DeriveAll04'
