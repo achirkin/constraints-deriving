@@ -25,7 +25,7 @@ import           Data.Data           (Data)
 import           Data.Either         (partitionEithers)
 import qualified Data.Kind           (Constraint, Type)
 import           Data.List           (groupBy, isPrefixOf, sortOn)
-import           Data.Maybe          (catMaybes, fromMaybe, mapMaybe)
+import           Data.Maybe          (catMaybes, fromMaybe)
 import           Data.Monoid         (First (..))
 import qualified FamInstEnv
 import           GhcPlugins          hiding (OverlapMode (..), overlapMode,
@@ -541,7 +541,7 @@ expandFamily _ BuiltInSynFamTyCon{}           _ = pure Nothing
 expandFamily _ (ClosedSynFamilyTyCon Nothing) _ = pure Nothing
 -- For a closed type family, equations are accessible right there
 expandFamily _ (ClosedSynFamilyTyCon (Just coax)) ft
-    = pure $ withFamily ft Nothing $ const $ expandClosedFamily os bcs
+    = withFamily ft (pure Nothing) $ const $ expandClosedFamily os bcs
   where
     bcs = fromBranches $ coAxiomBranches coax
     os  = if any (not . null . coAxBranchIncomps) bcs
@@ -565,16 +565,23 @@ withFamily ft def f = case splitTyConApp_maybe ft of
 -- | The same as `expandFamily`, but I know already that the family is closed.
 expandClosedFamily :: [OverlapMode]
                    -> [CoAxBranch]
-                   -> [Type] -> Maybe [(OverlapMode, Type, TCvSubst)]
+                   -> [Type] -> CorePluginM (Maybe [(OverlapMode, Type, TCvSubst)])
 -- empty type family -- leave it as-is
-expandClosedFamily _ [] _ = Nothing
-expandClosedFamily os bs fTyArgs = Just $ mapMaybe go $ zip os bs
+expandClosedFamily _ [] _ = pure Nothing
+expandClosedFamily os bs fTyArgs = fmap (Just . catMaybes) $ traverse go $ zip os bs
   where
-    go (om, cb) =
-      let flhs = coAxBranchLHS cb
-          n = length flhs
-          t = foldl mkAppTy (coAxBranchRHS cb) $ drop n fTyArgs
-      in (,,) om t <$> Unify.tcMatchTys (take n fTyArgs) flhs
+    go (om, cb) = do
+      let flhs' = coAxBranchLHS cb
+          n = length flhs'
+          tvs' = tyCoVarsOfTypesWellScoped flhs'
+      tvs <- traverse freshenTyVar tvs'
+      let freshenSub = zipTvSubst tvs' $ map mkTyVarTy tvs
+          flhs = substTys freshenSub flhs'
+          frhs = substTyAddInScope freshenSub $ coAxBranchRHS cb
+          t = foldl mkAppTy frhs $ drop n fTyArgs
+          msub = Unify.tcMatchTys (take n fTyArgs) flhs
+      return $ (,,) om t <$> msub
+
 
 
 -- | The same as `expandFamily`, but I know already that the family is open.
@@ -584,9 +591,8 @@ expandOpenFamily :: ModGuts
                  -> CorePluginM (Maybe [(OverlapMode, Type, TCvSubst)])
 expandOpenFamily guts fTyCon fTyArgs = do
   tfInsts <- lookupTyFamInstances guts fTyCon
-  return $
-    if null tfInsts
-    then Just [] -- No mercy
+  if null tfInsts
+    then pure $ Just [] -- No mercy
     else expandClosedFamily
            (repeat NoOverlap)
            (coAxiomSingleBranch . FamInstEnv.famInstAxiom <$> tfInsts)

@@ -20,7 +20,7 @@ module Data.Constraint.Deriving.CorePluginM
   , pluginWarning, pluginLocatedWarning
   , pluginError, pluginLocatedError
     -- * Tools
-  , newName, newTyVar
+  , newName, newTyVar, freshenTyVar
   , bullet, isConstraintKind, getModuleAnns
   , filterAvails
   , recMatchTyKi, replaceTypeOccurrences
@@ -352,6 +352,29 @@ lookupModule mdName pkgs = do
 -- | Generate new unique type variable
 newTyVar :: Kind -> CorePluginM TyVar
 newTyVar k = flip mkTyVar k <$> newName tvName "gen"
+
+-- | Assign a new unique to a type variable;
+--   also assign a whole new name if the input is a wildcard.
+freshenTyVar :: TyVar -> CorePluginM TyVar
+freshenTyVar tv = do
+    u <- getUniqueM
+    nn <-
+      if isInternalName n
+      then return $ mkDerivedInternalName (repOccN (show u)) u n
+      else do
+        md <- liftCoreM getModule
+        loc <- liftCoreM getSrcSpanM
+        return $ mkExternalName u md (repOccN (show u) on) loc
+    return $ mkTyVar nn k
+  where
+    n = tyVarName tv
+    k = tyVarKind tv
+    on = nameOccName n
+    repOccN s oc = case occNameString oc of
+      "_" -> mkOccName (occNameSpace oc) ("fresh_" ++ s)
+      _   -> on
+
+
 
 -- | Generate new unique name
 newName :: NameSpace -> String -> CorePluginM Name
