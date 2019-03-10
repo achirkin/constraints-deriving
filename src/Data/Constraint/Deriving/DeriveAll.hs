@@ -458,9 +458,10 @@ expandOneFamily guts mt@MatchingType{..} = case mfam of
     toMT ft (omode, rezt, subst)
       = let famOcc = substTyAddInScope subst ft
             newMt  = substMatchingType subst mt
-        in replaceTyMatchingType famOcc rezt newMt
-            { mtOverlapMode = omode
-            }
+        in if eqType ft rezt
+           then mt { mtIgnoreList = ft : mtIgnoreList }
+           else replaceTyMatchingType famOcc rezt newMt
+                  { mtOverlapMode = omode }
 
 
     -- Lookup through all components
@@ -606,15 +607,19 @@ expandDataFamily :: ModGuts
                  -> CorePluginM (Maybe [(OverlapMode, Type, TCvSubst)])
 expandDataFamily guts fTyCon fTyArgs = do
   tfInsts <- lookupTyFamInstances guts fTyCon
-  return $
-    if null tfInsts
-    then Just [] -- No mercy
-    else traverse expandDInstance tfInsts
+  if null tfInsts
+    then pure $ Just [] -- No mercy
+    else sequence <$> traverse expandDInstance tfInsts
   where
     expandDInstance inst
-      | instTyArgs <- align fTyArgs (FamInstEnv.fi_tys inst)
-      = (,,) NoOverlap (mkTyConApp fTyCon instTyArgs)
-      <$> Unify.tcMatchTys fTyArgs instTyArgs
+      | fitvs <- FamInstEnv.fi_tvs inst
+      = do
+      tvs <- traverse freshenTyVar $ fitvs
+      let freshenSub = zipTvSubst fitvs $ map mkTyVarTy tvs
+          fitys = substTys freshenSub $ FamInstEnv.fi_tys inst
+          instTyArgs = align fTyArgs fitys
+      return $ (,,) NoOverlap (mkTyConApp fTyCon instTyArgs)
+        <$> Unify.tcMatchTys fTyArgs instTyArgs
     align [] _          = []
     align xs []         = xs
     align (_:xs) (y:ys) = y : align xs ys

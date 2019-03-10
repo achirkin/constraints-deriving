@@ -72,6 +72,7 @@ main = do
           , noLoc "-package ghc"
           , noLoc "-package base"
           , noLoc "-package constraints-deriving"
+          , noLoc "-dcore-lint"
           , noLoc $ "-outputdir " ++ toFilePath tempDir]
         _ <- setSessionDynFlags dflags
         ghc800StaticFlagsFix
