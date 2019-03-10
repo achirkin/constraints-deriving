@@ -1,0 +1,11 @@
+============ Class instances declared in this module ============
+  instance KnownNumber t => Eq (Number t)
+    -- Defined in `Spec.ToInstance01'
+  instance KnownNumber Double
+    -- Defined at test/Spec/ToInstance01.hs:*
+  instance KnownNumber Int
+    -- Defined at test/Spec/ToInstance01.hs:*
+  instance KnownNumber t => Num (Number t)
+    -- Defined in `Spec.ToInstance01'
+  instance KnownNumber t => Ord (Number t)
+    -- Defined in `Spec.ToInstance01'
