@@ -4,3 +4,5 @@ constraints-deriving.cabal
 TAGS
 *.hi
 *.o
+dist
+dist-newstyle
