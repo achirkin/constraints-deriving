@@ -16,7 +16,7 @@ To use the plugin, add
 {-# OPTIONS_GHC -fplugin Data.Constraint.Deriving #-}
 ```
 to the header of your module.
-For debugging, add a plugin option @dump-instances@:
+For debugging, add a plugin option `dump-instances`:
 ```Haskell
 {-# OPTIONS_GHC -fplugin-opt Data.Constraint.Deriving:dump-instances #-}
 ```
@@ -26,6 +26,9 @@ To enable much more verbose debug output, use library flag `dev` (for debugging 
 Check out `example` folder for a motivating use case (enabled with flag `examples`).
 
 The plugin is controlled via GHC annotations; there are two types of annotations corresponding to two plugin passes.
+Both passes are core-to-core, which means the plugin runs after typechecker,
+which in turn means **the generated class instances are available only outside of the module**.
+A sort of inconvenience you may have experienced with template haskell 😉.
 
 ### DeriveAll
 
@@ -66,7 +69,10 @@ newtype Foo t = Foo t
 
 {-# ANN deriveEq (ToInstance NoOverlap) #-}
 deriveEq :: Eq t => Dict (Eq (Foo t))
-deriveEq = mapDict (unsafeDerive Foo) Dict 
+deriveEq = mapDict (unsafeDerive Foo) Dict
+
+-- the result of the above is equal to
+-- deriving instance Eq t => Eq (Foo t)
 ```
 You can find a more meaningful example in [`test/Spec/ToInstance01.hs`](https://github.com/achirkin/constraints-deriving/blob/master/test/Spec/ToInstance01.hs#L45-L47) or
 [`example/Lib/VecBackend.hs`](https://github.com/achirkin/constraints-deriving/blob/master/example/Lib/VecBackend.hs).
