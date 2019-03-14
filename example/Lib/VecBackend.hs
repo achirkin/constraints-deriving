@@ -14,24 +14,32 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -fplugin Data.Constraint.Deriving #-}
 {-# OPTIONS_GHC -fplugin-opt Data.Constraint.Deriving:dump-instances #-}
+{- |
+  This is where the magic happens.
 
+  Via combination of DeriveAll and ToInstance plugin passes
+  I create a system of overlapping type class instances for `VecBackend` type.
+  This way, if GHC knows which backend (type instance of `Backend`) is behind `VecBackend`,
+  it can select overlapping class instance for it;
+  overwise, it selects overlappable instance based on `KnownBackend` constraint.
+  -}
 module Lib.VecBackend where
 
 
-import           Data.Constraint
-import           Data.Constraint.Deriving
-import           Data.Constraint.Unsafe
-import           GHC.Base
-import           GHC.TypeLits             (KnownNat, Nat)
-import           Unsafe.Coerce
+import Data.Constraint
+import Data.Constraint.Deriving
+import Data.Constraint.Unsafe
+import GHC.Base
+import GHC.TypeLits             (KnownNat, Nat)
+import Unsafe.Coerce
 #if __GLASGOW_HASKELL__ < 804
-import           Data.Semigroup
+import Data.Semigroup
 #endif
 
+import Lib.BackendFamily
 
-import           Lib.BackendFamily
-
-
+-- Try to comment out the annotation;
+-- You will see that the compiler has to select type class instances at runtime more often.
 {-# ANN type VecBackend DeriveAll #-}
 type role VecBackend phantom phantom representational
 -- I need two layers of wrappers to provide default overlappable instances to
