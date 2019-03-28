@@ -35,8 +35,11 @@ A sort of inconvenience you may have experienced with template haskell 😉.
 `DeriveAll` plugin pass inspects a newtype declaration.
 To enable `DeriveAll` for a newtype `Foo`, add an annotation as follows:
 ```Haskell
+data Bar a = ...
 {-# ANN type Foo DeriveAll #-}
-newtype Foo a = ...
+newtype Foo a = Foo (Bar a)
+
+-- the result is that Foo has the same set of instances as Bar
 ```
 check out [`test/Spec/`](https://github.com/achirkin/constraints-deriving/tree/master/test/Spec) for [more examples](https://github.com/achirkin/constraints-deriving/blob/master/test/Spec/DeriveAll04.hs#L19-L20).
 
@@ -55,6 +58,20 @@ By adding class constraints, you force these class constraints for all generated
 Note, the internal machinery is different from `GeneralizedNewtypeDeriving` approach:
 rather than coercing every function in the instance definition from the base type to the newtype,
 it coerces the whole instance dictionary.
+
+#### Blacklisting instances from being DeriveAll-ed
+
+Sometimes you may want to avoid deriving a number of instances for your newtype.
+Use `DeriveAllBut [String]` constructor in the annotation and specify names of type classes you don't want to derive.
+```Haskell
+{-# ANN type CHF (DeriveAllBut ["Show"]) #-}
+newtype CHF = CHF Double deriving Show
+
+-- the result is a normal `Show CHF` instance and the rest of `Double`'s instances are DeriveAll-ed
+```
+For your safety,
+the plugin is hardcoded to **not** generate instances for any classes and types in
+`GHC.Generics`, `Data.Data`, `Data.Typeable`, `Language.Haskell.TH`.
 
 
 ### ToInstance
@@ -79,5 +96,4 @@ You can find a more meaningful example in [`test/Spec/ToInstance01.hs`](https://
 
 ## Further work
 
-One thing the `DeriveAll` pass misses is an option to blacklist some classes to avoid generating undesired instances.
-Furthermore, its derivation mechanics currently may break functional dependencies (untested).
+`DeriveAll` derivation mechanics currently may break functional dependencies (untested).

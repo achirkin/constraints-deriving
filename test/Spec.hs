@@ -9,6 +9,7 @@ import           Data.ByteString       (ByteString)
 import qualified Data.ByteString.Char8 as BS
 import           Data.Char             (isSpace)
 import           Data.Foldable         (fold)
+import           Data.List             (sort)
 import           Data.Maybe            (mapMaybe)
 import           Data.Monoid
 import           Data.Traversable      (for)
@@ -43,7 +44,7 @@ data TargetPaths = TargetPaths
   , targetPath :: FilePath
   , stdoutPath :: FilePath
   , stderrPath :: FilePath
-  }
+  } deriving (Eq, Ord)
 
 lookupTargetPaths :: Path a File -> Maybe TargetPaths
 lookupTargetPaths p = do
@@ -57,7 +58,7 @@ lookupTargetPaths p = do
 
 main :: IO ()
 main = do
-  targetPaths <- mapMaybe lookupTargetPaths <$>
+  targetPaths <- sort . mapMaybe lookupTargetPaths <$>
     (listDir specDir >>= traverse makeRelativeToCurrentDir . snd)
   withSystemTempFile   "constraints-deriving-stdout" $ \_ outH ->
     withSystemTempFile "constraints-deriving-stderr" $ \_ errH ->

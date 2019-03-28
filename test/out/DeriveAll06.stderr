@@ -1,0 +1,9 @@
+============ Class instances declared in this module ============
+  instance Enum Bar -- Defined at test/Spec/DeriveAll06.hs:*
+  instance Enum (Foo a b) -- Defined in `Spec.DeriveAll06'
+  instance Eq Bar -- Defined at test/Spec/DeriveAll06.hs:*
+  instance Eq (Foo a b) -- Defined in `Spec.DeriveAll06'
+  instance Ord Bar -- Defined at test/Spec/DeriveAll06.hs:*
+  instance Ord (Foo a b) -- Defined in `Spec.DeriveAll06'
+  instance Read Bar -- Defined at test/Spec/DeriveAll06.hs:*
+  instance Show Bar -- Defined at test/Spec/DeriveAll06.hs:*

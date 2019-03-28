@@ -44,8 +44,12 @@ import Data.Constraint.Deriving.CorePluginM
 --      for a given newtype.
 --
 --   The deriving logic is to simply re-use existing instance dictionaries
---      by casting them.
-data DeriveAll = DeriveAll
+--      by type-casting.
+data DeriveAll
+  = DeriveAll
+    -- ^ Same as @DeriveAllBut []@.
+  | DeriveAllBut [String]
+    -- ^ Specify a list of class names to ignore.
   deriving (Eq, Show, Read, Data)
 
 
@@ -103,7 +107,7 @@ deriveAllPass' gs = go (mg_tcs gs) annotateds gs
 
     -- process type definitions present in the set of annotations
     go (x:xs) anns guts
-      | Just ((xn,_):ds) <- lookupUFM anns x = do
+      | Just ((xn, da):ds) <- lookupUFM anns x = do
       unless (null ds) $
         pluginLocatedWarning (nameSrcSpan xn) $
           "Ignoring redundant DeriveAll annotions" $$
@@ -113,7 +117,7 @@ deriveAllPass' gs = go (mg_tcs gs) annotateds gs
           , ")"
           ]
       pluginDebug $ "DeriveAll invoked on TyCon" <+> ppr x
-      (newInstances, newBinds) <- unzip . fromMaybe [] <$> try (deriveAll x guts)
+      (newInstances, newBinds) <- unzip . fromMaybe [] <$> try (deriveAll da x guts)
       -- add new definitions and continue
       go xs (delFromUFM anns x) guts
         { mg_insts    = newInstances ++ mg_insts guts
@@ -142,8 +146,8 @@ deriveAllPass' gs = go (mg_tcs gs) annotateds gs
     and type families in the newtype def.)
   Then, lookup all class instances for the found type instances.
  -}
-deriveAll :: TyCon -> ModGuts -> CorePluginM [(InstEnv.ClsInst, CoreBind)]
-deriveAll tyCon guts
+deriveAll :: DeriveAll -> TyCon -> ModGuts -> CorePluginM [(InstEnv.ClsInst, CoreBind)]
+deriveAll da tyCon guts
 -- match good newtypes only
   | True <- isNewTyCon tyCon
   , False <- isClassTyCon tyCon
@@ -165,7 +169,7 @@ deriveAll tyCon guts
       pluginDebug
         . hang "DeriveAll (2): matching base types:" 2
         . vcat $ map ppr allMatchingTypes
-      r <- join <$> traverse (lookupMatchingInstances guts) allMatchingTypes
+      r <- join <$> traverse (lookupMatchingInstances da guts) allMatchingTypes
       pluginDebug
         . hang "DeriveAll (3): matching class instances:" 2
         . vcat $ map (ppr . fst) r
@@ -827,16 +831,17 @@ mptToExpression ps (MptPropagateAs pt)
 --
 --   Prerequisite: in the tripple (overlapmode, baseType, newType),
 --   TyVars of the newType must be a superset of TyVars of the baseType.
-lookupMatchingInstances :: ModGuts
+lookupMatchingInstances :: DeriveAll
+                        -> ModGuts
                         -> MatchingType
                         -> CorePluginM [(ClsInst, CoreBind)]
-lookupMatchingInstances guts mt
+lookupMatchingInstances da guts mt
     | Just bTyCon <- tyConAppTyCon_maybe $ mtBaseType mt = do
       ie <- getInstEnvs guts
       let clsInsts = lookupClsInsts ie bTyCon
       pluginDebug $ hang "lookupMatchingInstances candidate instances:" 2 $
         vcat $ map ppr clsInsts
-      catMaybes <$> traverse (lookupMatchingInstance ie mt) clsInsts
+      catMaybes <$> traverse (lookupMatchingInstance da ie mt) clsInsts
     | otherwise = fmap (const []) . pluginDebug $ hcat
         [ text "DeriveAll.lookupMatchingInstances found no class instances for "
         , ppr (mtBaseType mt)
@@ -844,13 +849,14 @@ lookupMatchingInstances guts mt
         ]
 
 
-lookupMatchingInstance :: InstEnv.InstEnvs
+lookupMatchingInstance :: DeriveAll
+                       -> InstEnv.InstEnvs
                        -> MatchingType
                        -> ClsInst
                        -> CorePluginM (Maybe (ClsInst, CoreBind))
-lookupMatchingInstance ie mt@MatchingType {..} baseInst
-  | not . unwantedName $ getName iClass
-  , all (noneTy unwantedName) iTyPams
+lookupMatchingInstance da ie mt@MatchingType {..} baseInst
+  | not . unwantedName da $ getName iClass
+  , all (noneTy (unwantedName DeriveAll)) iTyPams
   , Just mi <- findInstance ie mtBaseType baseInst
     = do
     (t, e) <- mtmiToExpression mt mi
@@ -883,7 +889,6 @@ lookupMatchingInstance ie mt@MatchingType {..} baseInst
       Just tc -> occNameString $ occName $ tyConName tc
 
 
-
 -- checks if none of the names in the type satisfy the predicate
 noneTy :: (Name -> Bool) -> Type -> Bool
 noneTy f = not . uniqSetAny f . orphNamesOfType
@@ -892,14 +897,16 @@ noneTy f = not . uniqSetAny f . orphNamesOfType
     uniqSetAny g = foldl (\a -> (||) a . g) False
 #endif
 
-unwantedName :: Name -> Bool
-unwantedName n
+unwantedName :: DeriveAll -> Name -> Bool
+unwantedName da n
   | modName == "GHC.Generics"  = True
   | modName == "Data.Typeable" = True
   | modName == "Data.Data"     = True
   | "Language.Haskell.TH"
           `isPrefixOf` modName = True
   | valName == "Coercible"     = True
+  | DeriveAllBut xs <- da
+  , valName `elem` xs          = True
   | otherwise                  = False
   where
     modName = moduleNameString . moduleName $ nameModule n
