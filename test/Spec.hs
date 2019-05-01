@@ -4,7 +4,7 @@
 {-# LANGUAGE RecordWildCards   #-}
 module Main (main) where
 
-import Control.Monad (when)
+import           Control.Monad         (when)
 import           Data.ByteString       (ByteString)
 import qualified Data.ByteString.Char8 as BS
 import           Data.Char             (isSpace)
@@ -22,8 +22,8 @@ import           Outputable
 import           Path
 import           Path.IO
 import           System.Exit
-import           System.IO
 import           System.FilePath       (isPathSeparator)
+import           System.IO
 
 -- | Folder with test modules to be compiled
 specDir :: Path Rel Dir

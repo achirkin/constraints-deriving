@@ -1,5 +1,5 @@
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FlexibleInstances      #-}
+{-# LANGUAGE MultiParamTypeClasses  #-}
 {-# LANGUAGE TypeFamilyDependencies #-}
 {-# OPTIONS_GHC -fplugin Data.Constraint.Deriving #-}
 {-# OPTIONS_GHC -fplugin-opt Data.Constraint.Deriving:dump-instances #-}

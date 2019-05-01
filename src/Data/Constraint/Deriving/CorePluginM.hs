@@ -20,7 +20,7 @@ module Data.Constraint.Deriving.CorePluginM
   , pluginWarning, pluginLocatedWarning
   , pluginError, pluginLocatedError
     -- * Tools
-  , newName, newTyVar, freshenTyVar
+  , newName, newTyVar, freshenTyVar, newLocalVar
   , bullet, isConstraintKind, getModuleAnns
   , filterAvails
   , recMatchTyKi, replaceTypeOccurrences
@@ -33,8 +33,8 @@ module Data.Constraint.Deriving.CorePluginM
 
 import qualified Avail
 import           Class               (Class)
-import           Control.Applicative ((<|>))
-import           Control.Monad       (join)
+import           Control.Applicative (Alternative (..))
+import           Control.Monad       (join, (>=>))
 import           Data.Data           (Data, typeRep)
 import           Data.IORef          (IORef, modifyIORef', newIORef, readIORef)
 import           Data.Maybe          (catMaybes)
@@ -42,14 +42,15 @@ import           Data.Monoid         (First (..))
 import           Data.Proxy          (Proxy (..))
 import qualified ErrUtils
 import qualified Finder
-import           GhcPlugins          hiding (OverlapMode (..), overlapMode,
-                                      (<>))
+import           GhcPlugins          hiding (OverlapMode (..), empty,
+                                      overlapMode, (<>))
 import qualified GhcPlugins
 import qualified IfaceEnv
 import           InstEnv             (InstEnv, InstEnvs)
 import qualified InstEnv
 import qualified LoadIface
 import           MonadUtils          (MonadIO (..))
+import qualified OccName             (varName)
 import           TcRnMonad           (getEps, initTc)
 import           TcRnTypes           (TcM)
 import qualified Unify
@@ -69,26 +70,38 @@ import GHC.Stack (withFrozenCallStack)
 --
 --   It provides two pieces of functionality:
 --
---     * Possibility to fail a computation
+--     * Possibility to fail a computation with IO error action
 --       (to show a nice error to a user and continue the work if possible);
 --
 --     * An environment with things that computed on demand, once at most.
 --
 newtype CorePluginM a = CorePluginM
-  { runCorePluginM :: IORef CorePluginEnv -> CoreM (Maybe a) }
+  { _runCorePluginM :: IORef CorePluginEnv -> CoreM (Either (IO ()) a) }
+
+runCorePluginM :: CorePluginM a -> IORef CorePluginEnv -> CoreM (Maybe a)
+runCorePluginM m e = _runCorePluginM m e >>= \case
+  Left er -> Nothing <$ liftIO er
+  Right a -> pure $ Just a
 
 instance Functor CorePluginM where
-  fmap f m = CorePluginM $ fmap (fmap f) . runCorePluginM m
+  fmap f m = CorePluginM $ fmap (fmap f) . _runCorePluginM m
 
 instance Applicative CorePluginM where
-  pure = CorePluginM . const . pure . Just
-  mf <*> ma = CorePluginM $ \e -> (<*>) <$> runCorePluginM mf e <*> runCorePluginM ma e
+  pure = CorePluginM . const . pure . Right
+  mf <*> ma = CorePluginM $ \e -> (<*>) <$> _runCorePluginM mf e <*> _runCorePluginM ma e
+
+instance Alternative CorePluginM where
+  empty = CorePluginM . const $ pure $ Left $ pure ()
+  ma <|> mb = CorePluginM $ \e -> f <$> _runCorePluginM ma e <*> _runCorePluginM mb e
+    where
+      f (Left _) = id
+      f rx       = const rx
 
 instance Monad CorePluginM where
   return = pure
-  ma >>= k = CorePluginM $ \e -> runCorePluginM ma e >>= \case
-    Nothing -> pure Nothing
-    Just a  -> runCorePluginM (k a) e
+  ma >>= k = CorePluginM $ \e -> _runCorePluginM ma e >>= \case
+    Left  a -> pure (Left a)
+    Right a -> _runCorePluginM (k a) e
 
 instance MonadIO CorePluginM where
   liftIO = liftCoreM . liftIO
@@ -97,20 +110,27 @@ instance MonadThings CorePluginM where
   lookupThing = liftCoreM . lookupThing
 
 instance MonadUnique CorePluginM where
-  getUniqueSupplyM = CorePluginM $ const $ Just <$> getUniqueSupplyM
+  getUniqueSupplyM = CorePluginM $ const $ Right <$> getUniqueSupplyM
 
 
 -- | Wrap CoreM action
 liftCoreM :: CoreM a -> CorePluginM a
-liftCoreM = CorePluginM . const . fmap Just
+liftCoreM = CorePluginM . const . fmap Right
 
 -- | Synonym for `fail`
 exception :: CorePluginM a
-exception = CorePluginM $ const $ pure Nothing
+exception = empty
 
 -- | Return `Nothing` if the computation fails
 try :: CorePluginM a -> CorePluginM (Maybe a)
-try m = CorePluginM $ fmap Just . runCorePluginM m
+try m = CorePluginM $ _runCorePluginM m >=> f
+  where
+    f (Left e)  = Right Nothing <$ liftIO e
+    f (Right a) = pure . Right $ Just a
+
+-- | Try and ignore the result
+try' :: CorePluginM a -> CorePluginM ()
+try' m = () <$ try m
 
 -- | Reference to the plugin environment variables.
 type CorePluginEnvRef = IORef CorePluginEnv
@@ -135,7 +155,7 @@ data CorePluginEnv = CorePluginEnv
 
 -- | Ask a field of the CorePluginEnv environment.
 ask :: (CorePluginEnv -> CorePluginM a) -> CorePluginM a
-ask f = join $ CorePluginM $ liftIO . fmap (Just . f) . readIORef
+ask f = join $ CorePluginM $ liftIO . fmap (Right . f) . readIORef
 
 -- | Init the `CorePluginM` environment and save it to IORef.
 initCorePluginEnv :: CoreM (IORef CorePluginEnv)
@@ -144,7 +164,7 @@ initCorePluginEnv = do
   -- need to force globalInstEnv as early as possible to make sure
   -- that ExternalPackageState var is not yet contaminated with
   -- many unrelated modules.
-  gie <- runCorePluginM (ask globalInstEnv) env
+  gie <- _runCorePluginM (ask globalInstEnv) env
   seq gie $ return env
 
 
@@ -254,9 +274,9 @@ defCorePluginEnv = CorePluginEnv
     }
   where
     saveAndReturn Nothing  f = CorePluginM $ \eref ->
-      Nothing <$ liftIO (modifyIORef' eref $ f exception)
+      Left (pure ()) <$ liftIO (modifyIORef' eref $ f exception)
     saveAndReturn (Just x) f = CorePluginM $ \eref ->
-      Just x  <$ liftIO (modifyIORef' eref $ f (pure x))
+      Right x  <$ liftIO (modifyIORef' eref $ f (pure x))
     maybeFound (Found _ m) = Just m
     maybeFound _           = Nothing
     lookupDep hsce (mpn, mn)
@@ -374,7 +394,13 @@ freshenTyVar tv = do
       "_" -> mkOccName (occNameSpace oc) ("fresh_" ++ s)
       _   -> on
 
-
+-- | Generate a new unique local var (not be exported!)
+newLocalVar :: Type -> String -> CorePluginM Var
+newLocalVar ty nameStr = do
+    loc <- liftCoreM getSrcSpanM
+    u <- getUniqueM
+    return $
+      mkLocalId (mkInternalName u (mkOccName OccName.varName nameStr) loc) ty
 
 -- | Generate new unique name
 newName :: NameSpace -> String -> CorePluginM Name
@@ -388,26 +414,26 @@ newName nspace nameStr = do
 
 
 pluginError :: SDoc -> CorePluginM a
-pluginError msg
-  = pluginProblemMsg Nothing ErrUtils.SevError msg >> exception
+pluginError = pluginProblemMsg Nothing ErrUtils.SevError
 
 pluginLocatedError :: SrcSpan -> SDoc -> CorePluginM a
-pluginLocatedError loc msg
-  = pluginProblemMsg (Just loc) ErrUtils.SevError msg >> exception
+pluginLocatedError loc = pluginProblemMsg (Just loc) ErrUtils.SevError
 
 pluginWarning :: SDoc -> CorePluginM ()
-pluginWarning = pluginProblemMsg Nothing ErrUtils.SevWarning
+pluginWarning = try' . pluginProblemMsg Nothing ErrUtils.SevWarning
 
 pluginLocatedWarning :: SrcSpan -> SDoc -> CorePluginM ()
-pluginLocatedWarning loc = pluginProblemMsg (Just loc) ErrUtils.SevWarning
+pluginLocatedWarning loc = try' . pluginProblemMsg (Just loc) ErrUtils.SevWarning
 
 pluginDebug :: SDoc -> CorePluginM ()
 #if PLUGIN_DEBUG
-pluginDebug = pluginProblemMsg Nothing ErrUtils.SevDump
+pluginDebug = try' . pluginProblemMsg Nothing ErrUtils.SevDump
 #else
 pluginDebug = const (pure ())
 #endif
 {-# INLINE pluginDebug #-}
+
+
 
 pluginTrace :: HasCallStack => SDoc -> a -> a
 #if PLUGIN_DEBUG
@@ -417,19 +443,18 @@ pluginTrace = const id
 #endif
 {-# INLINE pluginTrace #-}
 
-
 pluginProblemMsg :: Maybe SrcSpan
                  -> ErrUtils.Severity
                  -> SDoc
-                 -> CorePluginM ()
+                 -> CorePluginM a
 pluginProblemMsg mspan sev msg = do
   dflags <- liftCoreM getDynFlags
   loc    <- case mspan of
     Just sp -> pure sp
     Nothing -> liftCoreM getSrcSpanM
   unqual <- liftCoreM getPrintUnqualified
-  liftIO $ putLogMsg
-    dflags NoReason sev loc (mkErrStyle dflags unqual) msg
+  CorePluginM $ const $ pure $ Left $
+    putLogMsg dflags NoReason sev loc (mkErrStyle dflags unqual) msg
 
 #if __GLASGOW_HASKELL__ < 802
 putLogMsg :: DynFlags -> WarnReason -> ErrUtils.Severity

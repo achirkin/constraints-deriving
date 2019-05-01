@@ -163,7 +163,8 @@ toInstance (ToInstance omode) (NonRec bindVar bindExpr) = do
       Just cl -> pure cl
 
     -- try to apply dictToBare to the expression of the found binding
-    newExpr <- case unwrapDictExpr dictTy fDictToBare bindExpr of
+    mnewExpr <- try $ unwrapDictExpr dictTy fDictToBare bindExpr
+    newExpr  <- case mnewExpr of
       Nothing -> pluginLocatedError loc notGoodMsg
       Just ex -> pure $ mkCast ex
                       $ mkUnsafeCo Representational bindBareTy instSig
@@ -236,21 +237,25 @@ unwrapDictExpr :: Type
                   -- ^ dictToBare :: forall (c :: Constraint) . Dict c -> BareConstraint c
                -> CoreExpr
                   -- ^ forall a1..an . (Ctx1,.. Ctxn) => Dict c
-               -> Maybe CoreExpr
+               -> CorePluginM CoreExpr
                   -- ^ forall a1..an . (Ctx1,.. Ctxn) => BareConstraint c
 unwrapDictExpr dictT unwrapFun ex = case ex of
-    Var _ -> testNWrap Nothing
-    Lit _ -> testNWrap Nothing
-    App e a -> testNWrap $       (App e <$> proceed a)
-                        <|> (flip App a <$> proceed e)
-    Lam b e -> testNWrap $ Lam b <$> proceed e
-    Let b e -> testNWrap $ Let b <$> proceed e
-    Case {} -> testNWrap Nothing
-    Cast {} -> testNWrap Nothing
-    Tick t e -> testNWrap $ Tick t <$> proceed e
-    Type {}  -> Nothing
-    Coercion {} -> Nothing
+    Var _      -> testNWrap unwrapFail <|> (mkLamApp >>= proceed)
+    Lit _      -> testNWrap unwrapFail
+    App e a    -> testNWrap $ (App e <$> proceed a) <|> (flip App a <$> proceed e)
+    Lam b e    -> testNWrap $ Lam b <$> proceed e
+    Let b e    -> testNWrap $ Let b <$> proceed e
+    Case{}     -> testNWrap unwrapFail
+    Cast{}     -> testNWrap unwrapFail
+    Tick t e   -> testNWrap $ Tick t <$> proceed e
+    Type{}     -> unwrapFail
+    Coercion{} -> unwrapFail
   where
+    unwrapFail = pluginError
+      $  "Failed to match a definition signature."
+      $$ hang "Looking for a dictionary:" 2 (ppr dictT)
+      $$ hang "Inspecting an expression:" 2
+              (hsep [ppr ex, "::", ppr $ exprType ex])
     proceed = unwrapDictExpr dictT unwrapFun
     testNWrap go = if testType ex then wrap ex else go
     wrap e = flip fmap (getClsT e) $ \t -> Var unwrapFun `App` t `App` e
@@ -258,5 +263,18 @@ unwrapDictExpr dictT unwrapFun ex = case ex of
     -- I do not check if resulting substition is not trivial. Shall I?
     testType = isJust . Unify.tcMatchTy dictT . exprType
     getClsT e = case tyConAppArgs_maybe $ exprType e of
-      Just [t] -> Just $ Type t
-      _        -> Nothing
+      Just [t] -> pure $ Type t
+      _        -> unwrapFail
+    mkThetaVar (i, ty) = newLocalVar ty ("theta" ++ show (i :: Int))
+    mkLamApp =
+      let et0          = exprType ex
+          (bndrs, et1) = splitForAllTys et0
+          (theta, _  ) = splitFunTys et1
+      in  if null bndrs && null theta
+            then unwrapFail
+            else do
+              thetaVars <- traverse mkThetaVar $ zip [1 ..] theta
+              let allVars      = bndrs ++ thetaVars
+                  allApps      = map (Type . mkTyVarTy) bndrs ++ map Var thetaVars
+                  fullyApplied = foldl App ex allApps
+              return $ foldr Lam fullyApplied allVars
