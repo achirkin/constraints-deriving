@@ -1,6 +1,7 @@
-{-# LANGUAGE GADTs #-}
-{-# LANGUAGE ConstraintKinds #-}
-{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE ConstraintKinds  #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GADTs            #-}
+{-# LANGUAGE TypeFamilies     #-}
 {-# OPTIONS_GHC -fplugin Data.Constraint.Deriving #-}
 {-# OPTIONS_GHC -fplugin-opt Data.Constraint.Deriving:dump-instances #-}
 module Spec.ToInstance01 where
@@ -17,8 +18,8 @@ The plugin provides two advantages over manually implementing instances using si
     rather than once for every fuction usage.
  -}
 import Data.Constraint
-import Data.Constraint.Unsafe
 import Data.Constraint.Deriving
+import Data.Constraint.Unsafe
 
 newtype Number t = Number (NumberFam t)
 
@@ -46,6 +47,6 @@ deriveOrd = deriveIt numberSing
 deriveNum :: KnownNumber t => Dict (Num (Number t))
 deriveNum = deriveIt numberSing
 
-deriveIt :: (c Double, c Int) => NumberSing t -> Dict (c (Number t)) 
+deriveIt :: (c Double, c Int) => NumberSing t -> Dict (c (Number t))
 deriveIt NumInt    = mapDict (unsafeDerive Number) Dict
 deriveIt NumDouble = mapDict (unsafeDerive Number) Dict

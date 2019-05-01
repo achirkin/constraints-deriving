@@ -1,6 +1,6 @@
-{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE FlexibleInstances     #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE TypeFamilies          #-}
 {-# OPTIONS_GHC -fno-warn-redundant-constraints #-}
 {-# OPTIONS_GHC -fplugin Data.Constraint.Deriving #-}
 {-# OPTIONS_GHC -fplugin-opt Data.Constraint.Deriving:dump-instances #-}
