@@ -24,7 +24,7 @@ module Data.Constraint.Deriving.CorePluginM
   , bullet, isConstraintKind, getModuleAnns
   , filterAvails
   , recMatchTyKi, replaceTypeOccurrences
-  , OverlapMode (..), toOverlapFlag
+  , OverlapMode (..), toOverlapFlag, instanceOverlapMode
   , lookupClsInsts, getInstEnvs
     -- * Debugging
   , pluginDebug, pluginTrace
@@ -38,8 +38,9 @@ import           Control.Monad       (join, (>=>))
 import           Data.Data           (Data, typeRep)
 import           Data.IORef          (IORef, modifyIORef', newIORef, readIORef)
 import           Data.Maybe          (catMaybes)
-import           Data.Monoid         (First (..))
+import           Data.Monoid         as Mon (First (..), Monoid (..))
 import           Data.Proxy          (Proxy (..))
+import           Data.Semigroup      as Sem (Semigroup (..))
 import qualified ErrUtils
 import qualified Finder
 import           GhcPlugins          hiding (OverlapMode (..), empty,
@@ -518,11 +519,12 @@ getModuleAnns = go . mg_anns
 
 
 
--- | Similar to Unify.tcMatchTyKis, but looks if there is non-trivial subtype
+-- | Similar to Unify.tcMatchTyKis, but looks if there is a non-trivial subtype
 --   in the first type that matches the second.
 --   Non-trivial means not a TyVar.
-recMatchTyKi :: Type -> Type -> Maybe TCvSubst
-recMatchTyKi tsearched ttemp = go tsearched
+recMatchTyKi :: Bool -- ^ Whether to do inverse match (instance is more conrete)
+             -> Type -> Type -> Maybe TCvSubst
+recMatchTyKi inverse tsearched ttemp = go tsearched
   where
     go :: Type -> Maybe TCvSubst
     go t
@@ -530,7 +532,9 @@ recMatchTyKi tsearched ttemp = go tsearched
       | isTyVarTy t
         = Nothing
         -- found a good substitution
-      | Just sub <- matchIt t ttemp
+      | Just sub <- if inverse
+                    then matchIt ttemp t
+                    else matchIt t ttemp
         = Just sub
         -- split type constructors
       | Just (_, tys) <- splitTyConApp_maybe t
@@ -595,6 +599,24 @@ data OverlapMode
     --   don't worry about later instantiation
   deriving (Eq, Show, Read, Data)
 
+instance Sem.Semigroup OverlapMode where
+    NoOverlap <> m = m
+    m <> NoOverlap = m
+    Incoherent <> _ = Incoherent
+    _ <> Incoherent = Incoherent
+    Overlaps <> _   = Overlaps
+    _ <> Overlaps   = Overlaps
+    Overlappable <> Overlappable = Overlappable
+    Overlapping  <> Overlapping  = Overlapping
+    Overlappable <> Overlapping  = Overlaps
+    Overlapping  <> Overlappable = Overlaps
+
+instance Mon.Monoid OverlapMode where
+    mempty = NoOverlap
+#if !(MIN_VERSION_base(4,11,0))
+    mappend = (<>)
+#endif
+
 
 toOverlapFlag :: OverlapMode -> OverlapFlag
 toOverlapFlag m = OverlapFlag (getOMode m) False
@@ -611,7 +633,13 @@ toOverlapFlag m = OverlapFlag (getOMode m) False
     noSourceText = "[plugin-generated code]"
 #endif
 
-
+instanceOverlapMode :: InstEnv.ClsInst -> OverlapMode
+instanceOverlapMode i = case InstEnv.overlapMode (InstEnv.is_flag i) of
+    GhcPlugins.NoOverlap {}    -> NoOverlap
+    GhcPlugins.Overlapping {}  -> Overlapping
+    GhcPlugins.Overlappable {} -> Overlappable
+    GhcPlugins.Overlaps {}     -> Overlaps
+    GhcPlugins.Incoherent {}   -> Incoherent
 
 
 

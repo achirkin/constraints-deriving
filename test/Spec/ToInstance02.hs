@@ -12,9 +12,9 @@ Testing that variables, such as deriveEqOrig, may have TyVars (forall t);
 ToInstance pass should be able to go through the vars and theta types and match
 the RHS of the arrow (deriveEqOrig signature).
  -}
-import Data.Constraint
-import Data.Constraint.Deriving
-import Data.Constraint.Unsafe
+import           Data.Constraint
+import           Data.Constraint.Deriving
+import           Data.Constraint.Unsafe
 
 newtype Number t = Number (NumberFam t)
 
