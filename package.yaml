@@ -33,7 +33,7 @@ flags:
 
   debug:
     description:
-      Show debug trace info (used only for library develpoment)
+      Show debug trace info (used only for library development)
     default: false
     manual: true
 
