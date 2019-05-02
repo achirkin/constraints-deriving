@@ -1,5 +1,5 @@
 name:                constraints-deriving
-version:             1.0.1.1
+version:             1.0.1.2
 github:              "achirkin/constraints-deriving"
 license:             BSD3
 author:              "Artem Chirkin"
@@ -33,7 +33,9 @@ flags:
 
   debug:
     description:
-      Show debug trace info (used only for library development)
+      Show debug trace info (used only for library development).
+      Note, if you want to see the debug output of the plugin in another project,
+      you may need to manually define a CPP option -DPLUGIN_DEBUG in that project.
     default: false
     manual: true
 

@@ -24,9 +24,9 @@ import           Control.Monad       (join, unless)
 import           Data.Data           (Data)
 import           Data.Either         (partitionEithers)
 import qualified Data.Kind           (Constraint, Type)
-import           Data.List           (groupBy, isPrefixOf, sortOn)
+import           Data.List           (groupBy, isPrefixOf, nubBy, sortOn)
 import           Data.Maybe          (catMaybes, fromMaybe)
-import           Data.Monoid         (First (..))
+import           Data.Monoid         (First (..), Monoid (..))
 import qualified FamInstEnv
 import           GhcPlugins          hiding (OverlapMode (..), overlapMode,
                                       (<>))
@@ -63,7 +63,7 @@ type family DeriveContext (t :: Data.Kind.Type) :: Data.Kind.Constraint
 -- | Run `DeriveAll` plugin pass
 deriveAllPass :: CorePluginEnvRef -> CoreToDo
 deriveAllPass eref = CoreDoPluginPass "Data.Constraint.Deriving.DeriveAll"
-  -- if a plugin pass totally  fails to do anything useful,
+  -- if a plugin pass totally fails to do anything useful,
   -- copy original ModGuts as its output, so that next passes can do their jobs.
   (\x -> fromMaybe x <$> runCorePluginM (deriveAllPass' x) eref)
 
@@ -173,7 +173,7 @@ deriveAll da tyCon guts
       pluginDebug
         . hang "DeriveAll (3): matching class instances:" 2
         . vcat $ map (ppr . fst) r
-      return r
+      return $ filterDupInsts r
 
 -- not a good newtype declaration
   | otherwise
@@ -182,6 +182,8 @@ deriveAll da tyCon guts
        "DeriveAll works only on plain newtype declarations"
 
   where
+    -- O(n^2) search for duplicates. Slow, but what else can I do?..
+    filterDupInsts = nubBy $ \(x,_) (y, _) -> InstEnv.identicalClsInstHead x y
     mockInstance tc = do
       let tvs = tyConTyVars tc
           tys = mkTyVarTys tvs
@@ -684,7 +686,7 @@ findInstance :: InstEnv.InstEnvs
              -> Maybe MatchingInstance
 findInstance ie t i
   | -- Most important: some part of the instance parameters must unify to arg
-    Just sub <- getFirst $ foldMap (First . flip recMatchTyKi t) iTyPams
+    Just sub <- getFirst $ foldMap (First . flip (recMatchTyKi False) t) iTyPams
     -- substituted type parameters of the class
   , newTyPams <- map (substTyAddInScope sub) iTyPams
     -- This tells us how instance tyvars change after matching the type
@@ -762,7 +764,7 @@ mtmiToExpression MatchingType {..} mi = do
 
 -- | Construct a core expression and a corresponding type.
 --   It does not bind arguments;
---   uses only types and vars present in MatchinInstance;
+--   uses only types and vars present in MatchingInstance;
 --   may create a few vars for PredTypes, they are returned in fst.
 miToExpression' :: [TyExp]
                    -- ^ types and expressions of the PredTypes that are in scope
@@ -857,29 +859,38 @@ lookupMatchingInstance :: DeriveAll
 lookupMatchingInstance da ie mt@MatchingType {..} baseInst
   | not . unwantedName da $ getName iClass
   , all (noneTy (unwantedName DeriveAll)) iTyPams
-  , Just mi <- findInstance ie mtBaseType baseInst
-    = do
-    (t, e) <- mtmiToExpression mt mi
-    newN <- newName (occNameSpace baseDFunName)
-      $ occNameString baseDFunName
-        ++ show (getUnique baseDFunId) -- unique per baseDFunId
-        ++ newtypeNameS                -- unique per newType
-    let (newTyVars, _, _, newTyPams) = tcSplitDFunTy t
-        newDFunId = mkExportedLocalId
-          (DFunId isNewType) newN t
-    return $ Just
-      ( InstEnv.mkLocalInstance
-                    newDFunId
-                    (toOverlapFlag mtOverlapMode)
-                    newTyVars iClass newTyPams
-      , NonRec newDFunId e
-      )
+    = case findInstance ie mtBaseType baseInst of
+        Just mi -> do
+          (t, e) <- mtmiToExpression mt mi
+          newN <- newName (occNameSpace baseDFunName)
+            $ occNameString baseDFunName
+              ++ show (getUnique baseDFunId) -- unique per baseDFunId
+              ++ newtypeNameS                -- unique per newType
+          let (newTyVars, _, _, newTyPams) = tcSplitDFunTy t
+              newDFunId = mkExportedLocalId
+                (DFunId isNewType) newN t
+          return $ Just
+            ( InstEnv.mkLocalInstance
+                          newDFunId
+                          ( toOverlapFlag $ mappend mtOverlapMode baseOM )
+                          newTyVars iClass newTyPams
+            , NonRec newDFunId e
+            )
+        Nothing
+            -- in case if the instance is more specific than the MatchingType,
+            -- substitute types and try again
+          | Just sub <- getFirst
+              $ foldMap (First . flip (recMatchTyKi True) mtBaseType) iTyPams
+            -> lookupMatchingInstance da ie (substMatchingType sub mt) baseInst
+          | otherwise
+            -> do
+              pluginDebug $ hang "Ignored instance" 2
+                $ ppr mtBaseType <+> ppr baseInst
+              pure Nothing
   | otherwise
-    = do
-    pluginDebug $ hang "Ignored instance" 2
-      $ ppr mtBaseType <+> ppr baseInst
-    pure Nothing
+    = pure Nothing
   where
+    baseOM = instanceOverlapMode baseInst
     baseDFunId = InstEnv.instanceDFunId baseInst
     (_, _, iClass, iTyPams) = InstEnv.instanceSig baseInst
     isNewType = isNewTyCon (classTyCon iClass)
