@@ -25,7 +25,7 @@ module Data.Constraint.Deriving.CorePluginM
   , filterAvails
   , recMatchTyKi, replaceTypeOccurrences
   , OverlapMode (..), toOverlapFlag, instanceOverlapMode
-  , lookupClsInsts, getInstEnvs
+  , lookupClsInsts, getInstEnvs, replaceInstance
     -- * Debugging
   , pluginDebug, pluginTrace
   , HasCallStack
@@ -574,6 +574,52 @@ replaceTypeOccurrences told tnew = replace
         -- could not find anything
       | otherwise
         = t
+
+
+-- | Replace instance in ModGuts if its duplicate already exists there;
+--   otherwise just add this instance.
+replaceInstance :: InstEnv.ClsInst -> CoreBind -> ModGuts -> ModGuts
+replaceInstance newI newB guts
+  | NonRec _ newE <- newB
+  , First (Just oldI) <- foldMap sameInst $ mg_insts guts
+  , newDFunId <- InstEnv.instanceDFunId newI
+  , origDFunId <- InstEnv.instanceDFunId oldI
+  , dFunId <- newDFunId `setVarName`   idName origDFunId
+                        `setVarUnique` varUnique origDFunId
+  , bind   <- NonRec dFunId newE
+  , inst   <- newI { InstEnv.is_dfun = dFunId
+#ifdef MIN_VERSION_GLASGOW_HASKELL
+#if MIN_VERSION_GLASGOW_HASKELL(8,0,2,0)
+                   , InstEnv.is_dfun_name = idName dFunId
+#endif
+#endif
+                   }
+    = guts
+      { mg_insts    = replInst origDFunId inst $ mg_insts guts
+      , mg_inst_env = mg_inst_env guts
+           `InstEnv.deleteFromInstEnv` oldI
+           `InstEnv.extendInstEnv` inst
+      , mg_binds    = bind : remBind origDFunId (mg_binds guts)
+      }
+  | otherwise
+    = guts
+      { mg_insts    = newI : mg_insts guts
+      , mg_inst_env = InstEnv.extendInstEnv (mg_inst_env guts) newI
+      , mg_binds    = newB : mg_binds guts
+      }
+  where
+    remBind _ [] = []
+    remBind i' (b@(NonRec i _):bs)
+      | i == i'   = remBind i' bs
+      | otherwise = b  : remBind i' bs
+    remBind i' (Rec rb :bs) = Rec (filter ((i' /=) . fst) rb) : remBind i' bs
+    replInst _ _ [] = []
+    replInst d' i' (i:is)
+      | InstEnv.instanceDFunId i == d'   = i' : is
+      | otherwise = i : replInst d' i' is
+    sameInst i
+      = First $ if InstEnv.identicalClsInstHead newI i then Just i else Nothing
+
 
 
 

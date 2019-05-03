@@ -68,7 +68,7 @@ toInstancePass eref = CoreDoPluginPass "Data.Constraint.Deriving.ToInstance"
   (\x -> fromMaybe x <$> runCorePluginM (toInstancePass' x) eref)
 
 toInstancePass' :: ModGuts -> CorePluginM ModGuts
-toInstancePass' gs = go (reverse $ mg_binds gs) annotateds gs { mg_binds = []}
+toInstancePass' gs = go (reverse $ mg_binds gs) annotateds gs
   where
     annotateds :: UniqFM [(Name, ToInstance)]
     annotateds = getModuleAnns gs
@@ -105,19 +105,17 @@ toInstancePass' gs = go (reverse $ mg_binds gs) annotateds gs { mg_binds = []}
       -- add new definitions and continue
       try (toInstance ti cbx) >>= \case
         Nothing
-          -> go xs (delFromUFM anns x) guts { mg_binds = cbx : mg_binds guts}
-        Just (newInstance, newBind)
           -> go xs (delFromUFM anns x) guts
-            { mg_insts    = newInstance : mg_insts guts
-            , mg_inst_env = InstEnv.extendInstEnv (mg_inst_env guts) newInstance
-            , mg_binds    = cbx : newBind : mg_binds guts
-              -- Remove original binding from the export list
-              --                                if it was there.
-            , mg_exports  = filterAvails (xn /=) $ mg_exports guts
-            }
+        Just (newInstance, newBind)
+          -> go xs (delFromUFM anns x)
+              (replaceInstance newInstance newBind guts)
+                { -- Remove original binding from the export list
+                  --                                if it was there.
+                  mg_exports  = filterAvails (xn /=) $ mg_exports guts
+                }
 
     -- ignore the rest of bindings
-    go (x:xs) anns guts = go xs anns guts { mg_binds = x : mg_binds guts}
+    go (_:xs) anns guts = go xs anns guts
 
     pprBulletNameLoc n = hsep
       [" " , bullet, ppr $ occName n, ppr $ nameSrcSpan n]
