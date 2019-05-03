@@ -13,7 +13,7 @@ module Data.Constraint.Deriving
 
 import Data.List  (sortOn)
 import GhcPlugins hiding (OverlapMode (..), overlapMode)
-import InstEnv    (is_tys, is_cls)
+import InstEnv    (is_cls, is_tys)
 import Type       (tyConAppTyCon_maybe)
 
 import Data.Constraint.Deriving.DeriveAll
