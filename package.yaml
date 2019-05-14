@@ -1,5 +1,5 @@
 name:                constraints-deriving
-version:             1.0.2.0
+version:             1.0.3.0
 github:              "achirkin/constraints-deriving"
 license:             BSD3
 author:              "Artem Chirkin"
