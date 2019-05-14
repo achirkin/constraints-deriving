@@ -73,6 +73,12 @@ For your safety,
 the plugin is hardcoded to **not** generate instances for any classes and types in
 `GHC.Generics`, `Data.Data`, `Data.Typeable`, `Language.Haskell.TH`.
 
+#### Overlapping instances
+
+By default `DeriveAll` marks all instances as `NoOverlap` if there are no overlapping
+closed type families involved.
+Otherwise, it marks overlapped type instances as `Incoherent`.
+If this logic does not suit you, you can enforce `OverlapMode` using `DeriveAll'` data constructor.
 
 ### ToInstance
 

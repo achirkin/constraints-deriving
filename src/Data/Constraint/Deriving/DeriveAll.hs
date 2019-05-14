@@ -48,8 +48,10 @@ import Data.Constraint.Deriving.CorePluginM
 data DeriveAll
   = DeriveAll
     -- ^ Same as @DeriveAllBut []@.
-  | DeriveAllBut [String]
-    -- ^ Specify a list of class names to ignore.
+  | DeriveAllBut { _ignoreList :: [String] }
+    -- ^ Specify a list of class names to ignore
+  | DeriveAll' { _forcedMode :: OverlapMode, _ignoreList :: [String] }
+    -- ^ Specify an overlap mode and a list of class names to ignore
   deriving (Eq, Show, Read, Data)
 
 
@@ -872,7 +874,7 @@ lookupMatchingInstance da ie mt@MatchingType {..} baseInst
           return $ Just
             ( InstEnv.mkLocalInstance
                           newDFunId
-                          ( toOverlapFlag $ mappend mtOverlapMode baseOM )
+                          ( deriveAllMode da $ mappend mtOverlapMode baseOM )
                           newTyVars iClass newTyPams
             , NonRec newDFunId e
             )
@@ -890,6 +892,8 @@ lookupMatchingInstance da ie mt@MatchingType {..} baseInst
   | otherwise
     = pure Nothing
   where
+    deriveAllMode (DeriveAll' m _) _ = toOverlapFlag m
+    deriveAllMode  _               m = toOverlapFlag m
     baseOM = instanceOverlapMode baseInst
     baseDFunId = InstEnv.instanceDFunId baseInst
     (_, _, iClass, iTyPams) = InstEnv.instanceSig baseInst
@@ -917,6 +921,8 @@ unwantedName da n
           `isPrefixOf` modName = True
   | valName == "Coercible"     = True
   | DeriveAllBut xs <- da
+  , valName `elem` xs          = True
+  | DeriveAll' _ xs <- da
   , valName `elem` xs          = True
   | otherwise                  = False
   where
