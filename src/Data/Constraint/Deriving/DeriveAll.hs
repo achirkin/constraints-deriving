@@ -710,7 +710,7 @@ matchInstance ie cls ts
   , sub <- mkTvSubstPrs
          . catMaybes $ zipWith (fmap . (,)) iTyVars tyVarSubs
     = do
-
+    -- the following line checks if constraints are solvable and fails otherwise
     mpts <- traverse (matchPredType ie . substTyAddInScope sub) iTheta
     return MatchingInstance
       { miInst = i
@@ -883,12 +883,21 @@ lookupMatchingInstance da ie mt@MatchingType {..} baseInst
             -- substitute types and try again
           | Just sub <- getFirst
               $ foldMap (First . flip (recMatchTyKi True) mtBaseType) iTyPams
-            -> lookupMatchingInstance da ie (substMatchingType sub mt) baseInst
+          , not $ isEmptyTCvSubst sub
+            -> do
+            pluginDebug $ hang "Could not find an instance, trying again:" 2 $
+              vcat $ [ text "Base type:" <+> ppr mtBaseType
+                     , text "Instance:" <+> ppr baseInst
+                     , text "Substitution:" <+> ppr sub
+                    ]
+            lookupMatchingInstance da ie (substMatchingType sub mt) baseInst
           | otherwise
             -> do
-              pluginDebug $ hang "Ignored instance" 2
-                $ ppr mtBaseType <+> ppr baseInst
-              pure Nothing
+            pluginDebug $ hang "Ignored instance" 2 $
+              vcat $ [ text "Base type:" <+> ppr mtBaseType
+                     , text "Instance:" <+> ppr baseInst
+                     ]
+            pure Nothing
   | otherwise
     = pure Nothing
   where
