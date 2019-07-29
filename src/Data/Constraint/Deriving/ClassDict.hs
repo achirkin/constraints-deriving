@@ -7,16 +7,10 @@ module Data.Constraint.Deriving.ClassDict
   , CorePluginEnvRef, initCorePluginEnv
   ) where
 
-import           Class               (Class, classTyCon)
-import           Control.Applicative (Alternative (..))
-import           Control.Monad       (join, unless, when)
-import           Data.Data           (Data)
-import           Data.Maybe          (fromMaybe, isJust)
-import           Data.Monoid         (First (..))
-import           GhcPlugins          hiding (OverlapMode (..), overlapMode)
-import qualified InstEnv
-import qualified OccName
-import           Panic               (panicDoc)
+import           Control.Monad (join, unless, when)
+import           Data.Data     (Data)
+import           Data.Maybe    (fromMaybe, isJust)
+import           GhcPlugins    hiding (OverlapMode (..), overlapMode)
 import qualified Unify
 
 import Data.Constraint.Deriving.CorePluginM
@@ -131,13 +125,8 @@ classDict :: CoreBndr -> CorePluginM CoreExpr
 classDict bindVar = do
 
     -- get necessary definitions
-    tcBareConstraint <- ask tyConBareConstraint
     tcDict <- ask tyConDict
     let conDict = tyConSingleDataCon tcDict
-    -- fBareToDict <- ask funBareToDict -- do not really need this! Just use data con of Dict!
-
-    varCls <- newTyVar constraintKind
-    let tyMatcher = mkTyConApp tcDict [mkTyVarTy varCls]
 
     -- check that the outermost constructor of the result type is Dict
     -- and unwrap it.

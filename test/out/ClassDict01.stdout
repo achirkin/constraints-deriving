@@ -1,0 +1,6 @@
+[*] Compiling Spec.ClassDict01 ( test/Spec/ClassDict01.hs, * )
+
+Output of running 'main':
+LT
+True
+Test 3 "B"

@@ -119,7 +119,7 @@ defineEq :: (a -> a -> Bool) -> (a -> a -> Bool) -> Dict (Eq a)
 defineEq = defineEq
 -- the plugin replaces the above line with an actual class data constructor application
 ```
-
+Check out [`test/Spec/ClassDict01.hs`](https://github.com/achirkin/constraints-deriving/blob/master/test/Spec/ClassDict01.hs) for a more elaborate example.
 
 ## Further work
 
