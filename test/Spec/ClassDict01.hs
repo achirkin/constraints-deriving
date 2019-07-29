@@ -1,9 +1,9 @@
 {-# OPTIONS_GHC -fplugin Data.Constraint.Deriving #-}
 module Spec.ClassDict01 where
 
-import Data.Constraint
-import Data.Constraint.Deriving
-import Data.Monoid
+import           Data.Constraint
+import           Data.Constraint.Deriving
+import qualified Data.Monoid              as M
 
 main :: IO ()
 main = case testOrd of
@@ -34,7 +34,7 @@ testOrd = defineOrd
     (\a b -> if cmp a b == LT then b else a)
     (\a b -> if cmp a b == GT then b else a)
   where
-    cmp (Test i s) (Test j t) = compare i j <> compare s t
+    cmp (Test i s) (Test j t) = compare i j M.<> compare s t
 
 {-
 This is where all the magic happens:

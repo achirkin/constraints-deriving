@@ -72,7 +72,7 @@ main = do
       runGhc (Just libdir) $ do
         dflags' <- makeSimpleAndFast <$> getSessionDynFlags
         (dflags, _, _) <- parseDynamicFlags dflags'
-              { log_action = manualLogAction outH errH}
+              { log_action = manualLogAction outH errH }
           [ noLoc "-Wall"
           , noLoc "-hide-all-packages"
           , noLoc "-package ghc"
@@ -92,8 +92,9 @@ main = do
             resCompile <- isSucceeded <$> load LoadAllTargets
             -- try to exec main function if it exists
             when (getAll resCompile) $ do
-              modSum <- getModSummary $ mkModuleName $ "Spec." ++ targetName
-              setContext [IIModule $ moduleName  $ ms_mod modSum]
+              modSystemIO <- parseImportDecl "import System.IO (hFlush, stderr, stdout)"
+              modSumTarget <- getModSummary $ mkModuleName $ "Spec." ++ targetName
+              setContext [IIDecl modSystemIO, IIModule $ moduleName  $ ms_mod modSumTarget]
               mainIsInScope
                 <- not . null . filter (("main" ==) . getOccString)
                    <$> getNamesInScope
@@ -101,15 +102,15 @@ main = do
                 liftIO $ do
                   hDuplicateTo outH stdout
                   hDuplicateTo errH stderr
-                  putStrLn ""
-                  putStrLn "Output of running 'main':"
+                _ <- execStmt "putStrLn \"\"" execOptions
+                _ <- execStmt "putStrLn \"Output of running 'main':\"" execOptions
                 r <- execStmt "main" execOptions
+                _ <- execStmt "hFlush stdout" execOptions
+                _ <- execStmt "hFlush stderr" execOptions
                 liftIO $ do
                   case r of
                     ExecComplete { execResult = Left e } -> print e
                     _                                    -> return ()
-                  hFlush stdout
-                  hFlush stderr
                   hDuplicateTo stdout' stdout
                   hDuplicateTo stderr' stderr
 
