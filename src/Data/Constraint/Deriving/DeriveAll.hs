@@ -112,7 +112,7 @@ deriveAllPass' gs = go (mg_tcs gs) annotateds gs
       | Just ((xn, da):ds) <- lookupUFM anns x = do
       unless (null ds) $
         pluginLocatedWarning (nameSrcSpan xn) $
-          "Ignoring redundant DeriveAll annotions" $$
+          "Ignoring redundant DeriveAll annotations" $$
           hcat
           [ "(the plugin needs only one annotation per type declaration, but got "
           , speakN (length ds + 1)

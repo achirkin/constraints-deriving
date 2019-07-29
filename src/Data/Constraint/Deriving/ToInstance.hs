@@ -96,7 +96,7 @@ toInstancePass' gs = go (reverse $ mg_binds gs) annotateds gs
       | Just ((xn, ti):ds) <- lookupUFM anns x = do
       unless (null ds) $
         pluginLocatedWarning (nameSrcSpan xn) $
-          "Ignoring redundant ToInstance annotions" $$
+          "Ignoring redundant ToInstance annotations" $$
           hcat
           [ "(the plugin needs only one annotation per binding, but got "
           , speakN (length ds + 1)
