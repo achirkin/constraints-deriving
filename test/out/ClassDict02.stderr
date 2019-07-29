@@ -1,0 +1,20 @@
+test/Spec/ClassDict02.hs:* warning:
+    The import of `Data.Monoid' is redundant
+      except perhaps to import instances from `Data.Monoid'
+    To import instances alone, use: import Data.Monoid()
+
+test/Spec/ClassDict02.hs:* error:
+    Cannot match the expected type (the type of the data constructor of the given class) and the found type (the user-supplied binding).
+    Expected type: forall a.
+                   Eq a =>
+                   (a -> a -> Ordering)
+                   -> (a -> a -> Bool)
+                   -> (a -> a -> Bool)
+                   -> (a -> a -> Bool)
+                   -> (a -> a -> Bool)
+                   -> (a -> a -> a)
+                   -> (a -> a -> a)
+                   -> Dict (Ord a)
+    Found type:    forall a.
+                   Eq a =>
+                   (a -> a -> Ordering) -> Dict (Ord a)

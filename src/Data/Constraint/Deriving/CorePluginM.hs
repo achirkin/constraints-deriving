@@ -26,6 +26,7 @@ module Data.Constraint.Deriving.CorePluginM
   , recMatchTyKi, replaceTypeOccurrences
   , OverlapMode (..), toOverlapFlag, instanceOverlapMode
   , lookupClsInsts, getInstEnvs, replaceInstance
+  , mkTyArg
     -- * Debugging
   , pluginDebug, pluginTrace
   , HasCallStack
@@ -496,6 +497,13 @@ isConstraintKind :: Kind -> Bool
 isConstraintKind = Kind.isConstraintKind
 #else
 isConstraintKind = tcIsConstraintKind
+#endif
+
+#if __GLASGOW_HASKELL__ < 802
+mkTyArg :: Type -> Expr b
+mkTyArg ty
+  | Just co <- isCoercionTy_maybe ty = Coercion co
+  | otherwise                        = Type ty
 #endif
 
 -- | Similar to `getAnnotations`, but keeps the annotation target.

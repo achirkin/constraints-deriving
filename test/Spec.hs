@@ -16,8 +16,10 @@ import           Data.Traversable      (for)
 import           DynFlags
 import           ErrUtils              (mkLocMessageAnn)
 import           GHC
+import           GHC.IO.Handle
 import           GHC.Paths             (libdir)
 import           MonadUtils            (liftIO)
+import           Name                  (getOccString)
 import           Outputable
 import           Path
 import           Path.IO
@@ -58,6 +60,9 @@ lookupTargetPaths p = do
 
 main :: IO ()
 main = do
+  stdout' <- hDuplicate stdout
+  stderr' <- hDuplicate stderr
+
   targetPaths <- sort . mapMaybe lookupTargetPaths <$>
     (listDir specDir >>= traverse makeRelativeToCurrentDir . snd)
   withSystemTempFile   "constraints-deriving-stdout" $ \_ outH ->
@@ -85,6 +90,29 @@ main = do
             outPos <- liftIO $ hGetPosn outH
             errPos <- liftIO $ hGetPosn errH
             resCompile <- isSucceeded <$> load LoadAllTargets
+            -- try to exec main function if it exists
+            when (getAll resCompile) $ do
+              modSum <- getModSummary $ mkModuleName $ "Spec." ++ targetName
+              setContext [IIModule $ moduleName  $ ms_mod modSum]
+              mainIsInScope
+                <- not . null . filter (("main" ==) . getOccString)
+                   <$> getNamesInScope
+              when (mainIsInScope) $ do
+                liftIO $ do
+                  hDuplicateTo outH stdout
+                  hDuplicateTo errH stderr
+                  putStrLn ""
+                  putStrLn "Output of running 'main':"
+                r <- execStmt "main" execOptions
+                liftIO $ do
+                  case r of
+                    ExecComplete { execResult = Left e } -> print e
+                    _                                    -> return ()
+                  hFlush stdout
+                  hFlush stderr
+                  hDuplicateTo stdout' stdout
+                  hDuplicateTo stderr' stderr
+
             liftIO $ do
               -- flush logging handles to make sure logs are written
               hFlush outH
@@ -179,8 +207,9 @@ eqStar template bs
 
 makeSimpleAndFast :: DynFlags -> DynFlags
 makeSimpleAndFast flags = flags
-  { ghcMode     = OneShot
-  , ghcLink     = NoLink
+  { ghcMode     = CompManager
+  , ghcLink     = LinkInMemory
+  , hscTarget   = HscInterpreted
   , verbosity   = 1
   , optLevel    = 0
   , ways        = []

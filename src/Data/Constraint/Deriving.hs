@@ -7,6 +7,8 @@ module Data.Constraint.Deriving
     -- * ToInstance pass
   , ToInstance (..)
   , OverlapMode (..)
+    -- * ClassDict pass
+  , ClassDict (..)
   ) where
 
 
