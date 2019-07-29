@@ -16,6 +16,7 @@ import GhcPlugins hiding (OverlapMode (..), overlapMode)
 import InstEnv    (is_cls, is_tys)
 import Type       (tyConAppTyCon_maybe)
 
+import Data.Constraint.Deriving.ClassDict
 import Data.Constraint.Deriving.DeriveAll
 import Data.Constraint.Deriving.ToInstance
 
@@ -50,6 +51,7 @@ install :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
 install cmdopts todo = do
     eref <- initCorePluginEnv
     return ( deriveAllPass eref
+           : classDictPass eref
            : toInstancePass eref
            : if elem "dump-instances" cmdopts
              then dumpInstances:todo

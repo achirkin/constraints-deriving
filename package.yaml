@@ -1,5 +1,5 @@
 name:                constraints-deriving
-version:             1.0.4.0
+version:             1.1.0.0
 github:              "achirkin/constraints-deriving"
 license:             BSD3
 author:              "Artem Chirkin"
@@ -56,6 +56,7 @@ library:
   exposed-modules:
   - Data.Constraint.Bare
   - Data.Constraint.Deriving
+  - Data.Constraint.Deriving.ClassDict
   - Data.Constraint.Deriving.DeriveAll
   - Data.Constraint.Deriving.ToInstance
   other-modules:
