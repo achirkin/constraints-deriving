@@ -84,7 +84,7 @@ tests:
     - filepath
     - ghc
     - ghc-paths
-    - path
+    - path >= 0.5.13
     - path-io
     - bytestring
 
