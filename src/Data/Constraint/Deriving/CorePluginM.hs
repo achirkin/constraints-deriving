@@ -281,6 +281,9 @@ defCorePluginEnv = CorePluginEnv
       Right x  <$ liftIO (modifyIORef' eref $ f (pure x))
     maybeFound (Found _ m) = Just m
     maybeFound _           = Nothing
+    lookupDep :: HscEnv
+              -> (Maybe FastString, GenLocated SrcSpan ModuleName)
+              -> CorePluginM (Maybe Module)
     lookupDep hsce (mpn, mn)
       = maybeFound <$>
         liftIO (Finder.findImportedModule hsce (unLoc mn) mpn)
