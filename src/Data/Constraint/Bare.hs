@@ -1,12 +1,13 @@
-{-# LANGUAGE CPP             #-}
-{-# LANGUAGE ConstraintKinds #-}
-{-# LANGUAGE DataKinds       #-}
-{-# LANGUAGE GADTs           #-}
-{-# LANGUAGE KindSignatures  #-}
-{-# LANGUAGE MagicHash       #-}
-{-# LANGUAGE PatternSynonyms #-}
-{-# LANGUAGE RankNTypes      #-}
-{-# LANGUAGE ViewPatterns    #-}
+{-# LANGUAGE CPP                 #-}
+{-# LANGUAGE ConstraintKinds     #-}
+{-# LANGUAGE DataKinds           #-}
+{-# LANGUAGE GADTs               #-}
+{-# LANGUAGE KindSignatures      #-}
+{-# LANGUAGE MagicHash           #-}
+{-# LANGUAGE PatternSynonyms     #-}
+{-# LANGUAGE RankNTypes          #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE ViewPatterns        #-}
 -----------------------------------------------------------------------------
 -- |
 -- Module      :  Data.Constraint.Bare
@@ -22,6 +23,7 @@
 module Data.Constraint.Bare
   ( BareConstraint, pattern DictValue
   , dictToBare, bareToDict
+  , withBareConstraint
   ) where
 
 
@@ -50,14 +52,19 @@ pattern DictValue c <- (dictToBare -> c)
 #endif
 
 -- | Extract a `Constraint` from a `Dict`
-dictToBare :: Dict c -> BareConstraint c
-dictToBare Dict = case unsafeCoerce# id of MagicBC c -> c
+dictToBare :: forall c . Dict c -> BareConstraint c
+dictToBare Dict = case (unsafeCoerce# id :: Magic c (BareConstraint c)) of Magic c -> c
 {-# INLINE dictToBare #-}
 
 -- | Wrap a `Constraint` into a `Dict`
-bareToDict :: BareConstraint c -> Dict c
-bareToDict = unsafeCoerce# (MagicDi Dict)
+bareToDict :: forall c . BareConstraint c -> Dict c
+bareToDict = unsafeCoerce# (Magic Dict :: Magic c (Dict c))
 {-# INLINE bareToDict #-}
 
-newtype MagicDi c = MagicDi (c => Dict c)
-newtype MagicBC c = MagicBC (c => BareConstraint c)
+-- | Provide a constraint to a function using `BareConstraint`.
+--   This allows to provide constraints on-demand (lazily), rather than eagerly
+--   pattern-matching against `Dict` before executing the function.
+withBareConstraint :: forall c r . BareConstraint c -> (c => r) -> r
+withBareConstraint bc f = unsafeCoerce# (Magic f :: Magic c r) bc
+
+newtype Magic c r = Magic (c => r)
