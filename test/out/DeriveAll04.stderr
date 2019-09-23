@@ -3,5 +3,5 @@
   instance Eq B -- Defined at test/Spec/DeriveAll04.hs:*
   instance [overlapping] Eq (BazTy A)
     -- Defined in `Spec.DeriveAll04'
-  instance [incoherent] Eq (BazTy fresh_*)
+  instance [incoherent] Eq (BazTy *)
     -- Defined in `Spec.DeriveAll04'
