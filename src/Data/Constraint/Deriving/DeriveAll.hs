@@ -26,7 +26,7 @@ import           Data.Either         (partitionEithers)
 import qualified Data.Kind           (Constraint, Type)
 import           Data.List           (groupBy, isPrefixOf, nubBy, sortOn)
 import           Data.Maybe          (catMaybes, fromMaybe)
-import           Data.Monoid         (First (..), Monoid (..))
+import           Data.Monoid
 import qualified FamInstEnv
 import           GhcPlugins          hiding (OverlapMode (..), overlapMode,
                                       (<>))

@@ -16,7 +16,9 @@ module Data.Constraint.Deriving
 import Data.List  (sortOn)
 import GhcPlugins hiding (OverlapMode (..), overlapMode)
 import InstEnv    (is_cls, is_tys)
-import Type       (tyConAppTyCon_maybe)
+#if __GLASGOW_HASKELL__ < 808
+import Type (tyConAppTyCon_maybe)
+#endif
 
 import Data.Constraint.Deriving.ClassDict
 import Data.Constraint.Deriving.DeriveAll

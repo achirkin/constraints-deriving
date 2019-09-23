@@ -56,6 +56,9 @@ import qualified OccName             (varName)
 import           TcRnMonad           (getEps, initTc)
 import           TcRnTypes           (TcM)
 import qualified Unify
+#if __GLASGOW_HASKELL__ >= 808
+import qualified TysWiredIn
+#endif
 #if __GLASGOW_HASKELL__ < 806
 import qualified Kind      (isConstraintKind)
 import qualified TcRnMonad (initTcForLookup)
@@ -217,6 +220,9 @@ defCorePluginEnv = CorePluginEnv
         ec <- flip mkTyConApp [] <$> lookupTyCon (cTupleTyConName 0)
         saveAndReturn (Just ec) $ \a e -> e { tyEmptyConstraint = a }
 
+#if __GLASGOW_HASKELL__ >= 808
+    , classTypeEq = pure TysWiredIn.eqClass
+#else
     , classTypeEq = do
         m <- ask modDataTypeEquality
         mc <- try $ lookupName m cnTypeEq >>= lookupThing >>= \case
@@ -224,6 +230,7 @@ defCorePluginEnv = CorePluginEnv
             -> return cls
           _ -> exception
         saveAndReturn mc $ \a e -> e { classTypeEq = a }
+#endif
 
     , globalInstEnv = do
         hscEnv <- liftCoreM getHscEnv
@@ -736,5 +743,7 @@ tnDeriveContext = mkTcOcc "DeriveContext"
 vnDictToBare :: OccName
 vnDictToBare = mkVarOcc "dictToBare"
 
+#if __GLASGOW_HASKELL__ < 808
 cnTypeEq :: OccName
 cnTypeEq = mkTcOcc "~"
+#endif

@@ -24,7 +24,7 @@
   The idea is that this module does not expose any implementation details;
   one can even implement multiple copies of this file depending on the compiler or package flags,
   (such as the presence of SIMD extensions).
-  
+
   In this example, I provide four implementations, depending on the dimensionality of the vector.
   Note, that no evidence of the implementation details is exported.
  -}
@@ -40,7 +40,7 @@ module Lib.BackendFamily
 import Data.Constraint
 import Debug.Trace
 import GHC.Base
-import GHC.TypeLits    (type (+), type (-), CmpNat, KnownNat, Nat, natVal)
+import GHC.TypeLits
 #if __GLASGOW_HASKELL__ < 804
 import Data.Semigroup
 #endif
