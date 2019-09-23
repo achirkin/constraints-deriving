@@ -59,7 +59,7 @@ POSSIBILITY OF SUCH DAMAGE.
 -- This module is taken from
 -- <https://github.com/ekmett/constraints/blob/963c0e904ad48a5cec29a0cb649622d8c1872af4/src/Data/Constraint.hs  constraints:Data.Constraint>
 -- A few things have been cut from the module to remove dependencies.
--- 
+--
 --
 ----------------------------------------------------------------------------
 module Data.Constraint
@@ -104,11 +104,17 @@ import GHC.Exts (Constraint)
 import Data.Bits (Bits)
 import Data.Functor.Identity (Identity)
 import Numeric.Natural (Natural)
+#if !MIN_VERSION_base(4,13,0)
 import Data.Word (Word)
+#endif
 import Data.Coerce (Coercible)
 import Data.Type.Coercion(Coercion(..))
 #if MIN_VERSION_base(4,10,0)
+#if MIN_VERSION_base(4,13,0)
+import Data.Type.Equality (type (~~))
+#else
 import Data.Type.Equality ((:~~:)(..), type (~~))
+#endif
 import Type.Reflection (TypeRep, typeRepKind, withTypeable)
 #endif
 
