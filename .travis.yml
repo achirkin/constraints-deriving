@@ -18,27 +18,27 @@ cache:
 matrix:
   include:
 
-  - env: BUILD=cabal GHCVER=8.0.2 CABALVER=1.24
+  - env: BUILD=cabal GHCVER=8.0.2 CABALVER=1.24 CABALPREF=""
     compiler: ": #GHC 8.0.2"
     addons: {apt: {packages: [cabal-install-1.24,ghc-8.0.2], sources: [hvr-ghc]}}
 
-  - env: BUILD=cabal GHCVER=8.2.2 CABALVER=2.0
+  - env: BUILD=cabal GHCVER=8.2.2 CABALVER=2.0 CABALPREF=""
     compiler: ": #GHC 8.2.2"
     addons: {apt: {packages: [cabal-install-2.0,ghc-8.2.2], sources: [hvr-ghc]}}
 
-  - env: BUILD=cabal GHCVER=8.4.4 CABALVER=2.2
+  - env: BUILD=cabal GHCVER=8.4.4 CABALVER=2.2 CABALPREF=""
     compiler: ": #GHC 8.4.4"
     addons: {apt: {packages: [cabal-install-2.2,ghc-8.4.4], sources: [hvr-ghc]}}
 
-  - env: BUILD=cabal GHCVER=8.6.3 CABALVER=2.4
+  - env: BUILD=cabal GHCVER=8.6.3 CABALVER=2.4 CABALPREF=""
     compiler: ": #GHC 8.6.3"
     addons: {apt: {packages: [cabal-install-2.4,ghc-8.6.3], sources: [hvr-ghc]}}
 
-  - env: BUILD=cabal GHCVER=8.8.1 CABALVER=3.0
+  - env: BUILD=cabal GHCVER=8.8.1 CABALVER=3.0 CABALPREF="v1-"
     compiler: ": #GHC 8.8.1"
     addons: {apt: {packages: [cabal-install-3.0,ghc-8.8.1], sources: [hvr-ghc]}}
 
-  - env: BUILD=cabal GHCVER=head  CABALVER=head
+  - env: BUILD=cabal GHCVER=head  CABALVER=head CABALPREF="v1-"
     compiler: ": #GHC HEAD"
     addons: {apt: {packages: [cabal-install-head,ghc-head], sources: [hvr-ghc]}}
 
@@ -133,7 +133,7 @@ matrix:
     os: osx
 
   allow_failures:
-  - env: BUILD=cabal GHCVER=head  CABALVER=head
+  - env: BUILD=cabal GHCVER=head  CABALVER=head CABALPREF="v1-"
   - env: BUILD=stack ARGS="--resolver nightly"
   - env: BUILD=stack ARGS="--resolver nightly" PFLAGS="--flag *:constraints"
 
@@ -181,7 +181,7 @@ install:
       # the .cabal files needed by cabal-install.
       PACKAGES=$(stack --install-ghc query locals | grep '^ *path' | sed 's@^ *path:@@')
 
-      cabal install --only-dependencies --enable-tests --enable-benchmarks --force-reinstalls --ghc-options=-O0 --reorder-goals --max-backjumps=-1 $CABALARGS $PACKAGES
+      cabal ${CABALPREF}install --allow-newer --only-dependencies --enable-tests --enable-benchmarks --force-reinstalls --ghc-options=-O0 --reorder-goals --max-backjumps=-1 $CABALARGS $PACKAGES
       ;;
   esac
   set +ex
@@ -194,22 +194,22 @@ script:
       stack --no-terminal $ARGS test $PFLAGS --bench --no-run-benchmarks --haddock --no-haddock-deps
       ;;
     cabal)
-      cabal install --enable-tests --enable-benchmarks --force-reinstalls --ghc-options=-O0 --reorder-goals --max-backjumps=-1 $CABALARGS $PACKAGES
+      cabal ${CABALPREF}install --allow-newer --enable-tests --enable-benchmarks --force-reinstalls --ghc-options=-O0 --reorder-goals --max-backjumps=-1 $CABALARGS $PACKAGES
 
       ORIGDIR=$(pwd)
       for dir in $PACKAGES
       do
         cd $dir
         cabal check
-        cabal sdist
+        cabal ${CABALPREF}sdist
         PKGVER=$(cabal info . | awk '{print $2;exit}')
         SRC_TGZ=$PKGVER.tar.gz
         cd dist
         tar zxfv "$SRC_TGZ"
         cd "$PKGVER"
-        cabal configure --enable-tests --ghc-options -O0
-        cabal build
-        cabal test --show-details=streaming --log=/dev/stdout
+        cabal ${CABALPREF}configure --enable-tests --ghc-options -O0
+        cabal ${CABALPREF}build
+        cabal ${CABALPREF}test --show-details=streaming --log=/dev/stdout
         cd $ORIGDIR
       done
       ;;
