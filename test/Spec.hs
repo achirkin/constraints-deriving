@@ -4,7 +4,7 @@
 {-# LANGUAGE RecordWildCards   #-}
 module Main (main) where
 
-import           Control.Monad         (when)
+import           Control.Monad         (when, guard)
 import           Data.ByteString       (ByteString)
 import qualified Data.ByteString.Char8 as BS
 import           Data.Char             (isSpace)
@@ -50,7 +50,12 @@ data TargetPaths = TargetPaths
 
 lookupTargetPaths :: Path a File -> Maybe TargetPaths
 lookupTargetPaths p = do
-  if fileExtension p == ".hs" then Just () else Nothing
+#if MIN_VERSION_path(0,7,0)
+  ext <- fileExtension p
+#else
+  let ext = fileExtension p
+#endif
+  guard $ ext == ".hs"
   targetPath <- Just $ toFilePath p
   targetName <- toFilePath <$> setFileExtension "" (filename p)
   stdoutPath <- toFilePath <$> correspondingStdOut p
