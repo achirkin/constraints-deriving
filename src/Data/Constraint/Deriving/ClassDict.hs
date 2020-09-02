@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP                #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE LambdaCase         #-}
 {-# LANGUAGE OverloadedStrings  #-}
@@ -208,6 +209,11 @@ mapResultType f t
   | (bndrs@(_:_), t') <- splitForAllTys t
     = mkSpecForAllTys bndrs $ mapResultType f t'
   | Just (at, rt) <- splitFunTy_maybe t
-    = mkFunTy at (mapResultType f rt)
+#if __GLASGOW_HASKELL__ >= 810
+    = mkVisFunTy
+#else
+    = mkFunTy
+#endif
+         at (mapResultType f rt)
   | otherwise
     = f t

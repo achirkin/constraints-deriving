@@ -28,7 +28,12 @@ module Data.Constraint.Bare
 
 
 import Data.Constraint (Dict (..))
-import GHC.Base        (Constraint, Type, unsafeCoerce#)
+import GHC.Base        (Constraint, Type)
+#if __GLASGOW_HASKELL__ >= 900
+import GHC.Exts        (unsafeCoerce#)
+#elif
+import GHC.Base        (unsafeCoerce#)
+#endif
 
 -- | An unsafeCoerced pointer to a Constraint, such as a class function dictionary.
 data BareConstraint :: Constraint -> Type
