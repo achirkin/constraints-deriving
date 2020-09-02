@@ -31,7 +31,7 @@ import Data.Constraint (Dict (..))
 import GHC.Base        (Constraint, Type)
 #if __GLASGOW_HASKELL__ >= 900
 import GHC.Exts        (unsafeCoerce#)
-#elif
+#else
 import GHC.Base        (unsafeCoerce#)
 #endif
 
