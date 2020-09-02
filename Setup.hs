@@ -26,7 +26,9 @@ module Main (main) where
 import Distribution.PackageDescription
 import Distribution.Simple
 import qualified Distribution.ModuleName as ModuleName
-#if MIN_VERSION_Cabal(2,0,0)
+#if MIN_VERSION_Cabal(3,5,0)
+import Distribution.Types.ModuleReexport
+#elif MIN_VERSION_Cabal(2,0,0)
 import Distribution.Types.CondTree (CondBranch(CondBranch))
 #endif
 
@@ -43,7 +45,13 @@ addReexportsCT :: CondTree ConfVar [Dependency] Library
 addReexportsCT ct = ct
     { condTreeComponents = reexportBranch : condTreeComponents ct }
   where
-    constraintsCondition = Var (Flag (mkFlagName "constraints"))
+    constraintsCondition = Var (
+#if MIN_VERSION_Cabal(3,5,0)
+                              PackageFlag
+#else
+                              Flag
+#endif
+                                 (mkFlagName "constraints"))
     reexportContent   = mempty
       { reexportedModules =
          [ ModuleReexport

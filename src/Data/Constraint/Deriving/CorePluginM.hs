@@ -588,7 +588,12 @@ replaceTypeOccurrences told tnew = replace
         = mkSpecForAllTys bndrs $ replace t'
         -- split arrow types
       | Just (at, rt) <- splitFunTy_maybe t
-        = mkFunTy (replace at) (replace rt)
+#if __GLASGOW_HASKELL__ >= 810
+        = mkVisFunTy
+#else
+        = mkFunTy
+#endif
+            (replace at) (replace rt)
         -- could not find anything
       | otherwise
         = t
