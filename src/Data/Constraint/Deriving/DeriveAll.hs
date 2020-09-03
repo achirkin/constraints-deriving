@@ -757,11 +757,8 @@ mtmiToExpression MatchingType {..} mi = do
   let extraTheta
             = filter (\t -> not $ any (eqType t . fst) bndrs) mtTheta
       tRepl = replaceTypeOccurrences mtBaseType mtNewType tOrig
-      tFun  = mkVisFunTys (extraTheta ++ map fst bndrs) tRepl
+      tFun  = mkInvisFunTys (extraTheta ++ map fst bndrs) tRepl
       tvs   =  tyCoVarsOfTypeWellScoped tFun
-#if __GLASGOW_HASKELL__ < 810
-      mkVisFunTys = mkFunTys
-#endif
   return
     ( mkSpecForAllTys tvs tFun
     , mkCoreLams (tvs ++ map mkWildValBinder extraTheta ++ map snd bndrs)
