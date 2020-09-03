@@ -30,6 +30,9 @@ module Data.Constraint.Deriving.CorePluginM
     -- * Debugging
   , pluginDebug, pluginTrace
   , HasCallStack
+#if __GLASGOW_HASKELL__ < 810
+  , mkVisFunTy, mkInvisFunTy, mkVisFunTys, mkInvisFunTys
+#endif
   ) where
 
 import qualified Avail
@@ -588,12 +591,7 @@ replaceTypeOccurrences told tnew = replace
         = mkSpecForAllTys bndrs $ replace t'
         -- split arrow types
       | Just (at, rt) <- splitFunTy_maybe t
-#if __GLASGOW_HASKELL__ >= 810
-        = mkVisFunTy
-#else
-        = mkFunTy
-#endif
-            (replace at) (replace rt)
+        = mkVisFunTy (replace at) (replace rt)
         -- could not find anything
       | otherwise
         = t
@@ -751,4 +749,13 @@ vnDictToBare = mkVarOcc "dictToBare"
 #if __GLASGOW_HASKELL__ < 808
 cnTypeEq :: OccName
 cnTypeEq = mkTcOcc "~"
+#endif
+
+#if __GLASGOW_HASKELL__ < 810
+mkVisFunTy, mkInvisFunTy :: Type -> Type -> Type
+mkVisFunTy = mkFunTy
+mkInvisFunTy = mkFunTy
+mkVisFunTys, mkInvisFunTys :: [Type] -> Type -> Type
+mkVisFunTys = mkFunTys
+mkInvisFunTys = mkFunTys
 #endif

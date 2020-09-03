@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP                #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE LambdaCase         #-}
 {-# LANGUAGE OverloadedStrings  #-}
@@ -153,11 +152,8 @@ toInstance (ToInstance omode) (NonRec bindVar bindExpr) = do
       Nothing -> pluginLocatedError loc notGoodMsg
       Just ma -> pure ma
     let matchedTy = substTyVar match varCls
-        instSig = mkSpecForAllTys bndrs $ mkVisFunTys theta matchedTy
-        bindBareTy = mkSpecForAllTys bndrs $ mkVisFunTys theta $ mkTyConApp tcBareConstraint [matchedTy]
-#if __GLASGOW_HASKELL__ < 810
-        mkVisFunTys = mkFunTys
-#endif
+        instSig = mkSpecForAllTys bndrs $ mkInvisFunTys theta matchedTy
+        bindBareTy = mkSpecForAllTys bndrs $ mkInvisFunTys theta $ mkTyConApp tcBareConstraint [matchedTy]
 
     -- check if constraint is indeed a class and get it
     matchedClass <- case tyConAppTyCon_maybe matchedTy >>= tyConClass_maybe of
