@@ -27,6 +27,11 @@ import           System.Exit
 import           System.FilePath       (isPathSeparator)
 import           System.IO
 
+#if !MIN_VERSION_path(0,7,0)
+replaceExtension :: MonadThrow m => String -> Path b File -> m (Path b File)
+replaceExtension = setFileExtension
+#endif
+
 -- | Folder with test modules to be compiled
 specDir :: Path Rel Dir
 specDir = [reldir|test/Spec/|]
@@ -36,10 +41,10 @@ outDir :: Path Rel Dir
 outDir = [reldir|test/out/|]
 
 correspondingStdOut :: Path a File -> Maybe (Path Rel File)
-correspondingStdOut f = setFileExtension "stdout" $ outDir </> filename f
+correspondingStdOut f = replaceExtension "stdout" $ outDir </> filename f
 
 correspondingStdErr :: Path a File -> Maybe (Path Rel File)
-correspondingStdErr f = setFileExtension "stderr" $ outDir </> filename f
+correspondingStdErr f = replaceExtension "stderr" $ outDir </> filename f
 
 data TargetPaths = TargetPaths
   { targetName :: String
@@ -57,7 +62,7 @@ lookupTargetPaths p = do
 #endif
   guard $ ext == ".hs"
   targetPath <- Just $ toFilePath p
-  targetName <- toFilePath <$> setFileExtension "" (filename p)
+  targetName <- toFilePath <$> replaceExtension "" (filename p)
   stdoutPath <- toFilePath <$> correspondingStdOut p
   stderrPath <- toFilePath <$> correspondingStdErr p
   return TargetPaths {..}
