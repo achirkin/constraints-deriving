@@ -94,6 +94,18 @@ matrix:
     compiler: ": #stack 8.6.3 +constraints"
     addons: {apt: {packages: [libgmp-dev]}}
 
+  - env: BUILD=stack ARGS="--resolver lts-14" PFLAGS="--flag *:constraints"
+    compiler: ": #stack 8.6.5 +constraints"
+    addons: {apt: {packages: [libgmp-dev]}}
+
+  - env: BUILD=stack ARGS="--resolver lts-15" PFLAGS="--flag *:constraints"
+    compiler: ": #stack 8.8.2 +constraints"
+    addons: {apt: {packages: [libgmp-dev]}}
+
+  - env: BUILD=stack ARGS="--resolver lts-16" PFLAGS="--flag *:constraints"
+    compiler: ": #stack 8.8.4 +constraints"
+    addons: {apt: {packages: [libgmp-dev]}}
+
   - env: BUILD=stack ARGS="--resolver nightly" PFLAGS="--flag *:constraints"
     compiler: ": #stack nightly +constraints"
     addons: {apt: {packages: [libgmp-dev]}}
