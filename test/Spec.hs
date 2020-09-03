@@ -28,7 +28,7 @@ import           System.FilePath       (isPathSeparator)
 import           System.IO
 
 #if !MIN_VERSION_path(0,7,0)
-replaceExtension :: MonadThrow m => String -> Path b File -> m (Path b File)
+replaceExtension :: String -> Path b File -> Maybe (Path b File)
 replaceExtension = setFileExtension
 #endif
 
