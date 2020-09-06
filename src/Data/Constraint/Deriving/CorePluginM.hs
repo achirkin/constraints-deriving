@@ -30,6 +30,11 @@ module Data.Constraint.Deriving.CorePluginM
     -- * Debugging
   , pluginDebug, pluginTrace
   , HasCallStack
+  , splitFunTyArg_maybe
+  , mkFunTy
+#if __GLASGOW_HASKELL__ < 810
+  , mkVisFunTy, mkInvisFunTy, mkVisFunTys, mkInvisFunTys
+#endif
   ) where
 
 import qualified Avail
@@ -45,7 +50,7 @@ import           Data.Semigroup      as Sem (Semigroup (..))
 import qualified ErrUtils
 import qualified Finder
 import           GhcPlugins          hiding (OverlapMode (..), empty,
-                                      overlapMode, (<>))
+                                      overlapMode, (<>), mkFunTy)
 import qualified GhcPlugins
 import qualified IfaceEnv
 import           InstEnv             (InstEnv, InstEnvs)
@@ -56,6 +61,9 @@ import qualified OccName             (varName)
 import           TcRnMonad           (getEps, initTc)
 import           TcRnTypes           (TcM)
 import qualified Unify
+#if __GLASGOW_HASKELL__ >= 810
+import qualified TyCoRep
+#endif
 #if __GLASGOW_HASKELL__ >= 808
 import qualified TysWiredIn
 #endif
@@ -587,8 +595,8 @@ replaceTypeOccurrences told tnew = replace
       | (bndrs@(_:_), t') <- splitForAllTys t
         = mkSpecForAllTys bndrs $ replace t'
         -- split arrow types
-      | Just (at, rt) <- splitFunTy_maybe t
-        = mkFunTy (replace at) (replace rt)
+      | Just (vis, at, rt) <- splitFunTyArg_maybe t
+        = mkFunTy vis (replace at) (replace rt)
         -- could not find anything
       | otherwise
         = t
@@ -746,4 +754,35 @@ vnDictToBare = mkVarOcc "dictToBare"
 #if __GLASGOW_HASKELL__ < 808
 cnTypeEq :: OccName
 cnTypeEq = mkTcOcc "~"
+#endif
+
+#if __GLASGOW_HASKELL__ < 810
+type AnonArgFlag = ()
+
+mkVisFunTy, mkInvisFunTy :: Type -> Type -> Type
+mkVisFunTy = GhcPlugins.mkFunTy
+mkInvisFunTy = GhcPlugins.mkFunTy
+
+mkVisFunTys, mkInvisFunTys :: [Type] -> Type -> Type
+mkVisFunTys = GhcPlugins.mkFunTys
+mkInvisFunTys = GhcPlugins.mkFunTys
+#endif
+
+mkFunTy :: AnonArgFlag -> Type -> Type -> Type
+#if __GLASGOW_HASKELL__ < 810
+mkFunTy _ = GhcPlugins.mkFunTy
+#else
+mkFunTy = TyCoRep.mkFunTy
+#endif
+
+splitFunTyArg_maybe :: Type -> Maybe (AnonArgFlag, Type, Type)
+#if __GLASGOW_HASKELL__ < 810
+splitFunTyArg_maybe ty =
+    case splitFunTy_maybe ty of
+        Just (arg, res) -> Just ((), arg, res)
+        _               -> Nothing
+#else
+splitFunTyArg_maybe ty | Just ty' <- coreView ty = splitFunTyArg_maybe ty'
+splitFunTyArg_maybe (TyCoRep.FunTy vis arg res)  = Just (vis, arg, res)
+splitFunTyArg_maybe _                            = Nothing
 #endif

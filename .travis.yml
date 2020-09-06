@@ -34,9 +34,13 @@ matrix:
     compiler: ": #GHC 8.6.3"
     addons: {apt: {packages: [cabal-install-2.4,ghc-8.6.3], sources: [hvr-ghc]}}
 
-  - env: BUILD=cabal GHCVER=8.8.1 CABALVER=3.0 CABALPREF="v1-"
-    compiler: ": #GHC 8.8.1"
-    addons: {apt: {packages: [cabal-install-3.0,ghc-8.8.1], sources: [hvr-ghc]}}
+  - env: BUILD=cabal GHCVER=8.8.4 CABALVER=3.0 CABALPREF="v1-"
+    compiler: ": #GHC 8.8.4"
+    addons: {apt: {packages: [cabal-install-3.0,ghc-8.8.4], sources: [hvr-ghc]}}
+
+  - env: BUILD=cabal GHCVER=8.10.2 CABALVER=3.2 CABALPREF="v1-"
+    compiler: ": #GHC 8.10.2"
+    addons: {apt: {packages: [cabal-install-3.2,ghc-8.10.2], sources: [hvr-ghc]}}
 
   - env: BUILD=cabal GHCVER=head  CABALVER=head CABALPREF="v1-"
     compiler: ": #GHC HEAD"
@@ -66,6 +70,18 @@ matrix:
     compiler: ": #stack 8.6.3"
     addons: {apt: {packages: [libgmp-dev]}}
 
+  - env: BUILD=stack ARGS="--resolver lts-14"
+    compiler: ": #stack 8.6.5"
+    addons: {apt: {packages: [libgmp-dev]}}
+
+  - env: BUILD=stack ARGS="--resolver lts-15"
+    compiler: ": #stack 8.8.2"
+    addons: {apt: {packages: [libgmp-dev]}}
+
+  - env: BUILD=stack ARGS="--resolver lts-16"
+    compiler: ": #stack 8.8.4"
+    addons: {apt: {packages: [libgmp-dev]}}
+
   - env: BUILD=stack ARGS="--resolver nightly"
     compiler: ": #stack nightly"
     addons: {apt: {packages: [libgmp-dev]}}
@@ -88,6 +104,18 @@ matrix:
 
   - env: BUILD=stack ARGS="--resolver lts-13" PFLAGS="--flag *:constraints"
     compiler: ": #stack 8.6.3 +constraints"
+    addons: {apt: {packages: [libgmp-dev]}}
+
+  - env: BUILD=stack ARGS="--resolver lts-14" PFLAGS="--flag *:constraints"
+    compiler: ": #stack 8.6.5 +constraints"
+    addons: {apt: {packages: [libgmp-dev]}}
+
+  - env: BUILD=stack ARGS="--resolver lts-15" PFLAGS="--flag *:constraints"
+    compiler: ": #stack 8.8.2 +constraints"
+    addons: {apt: {packages: [libgmp-dev]}}
+
+  - env: BUILD=stack ARGS="--resolver lts-16" PFLAGS="--flag *:constraints"
+    compiler: ": #stack 8.8.4 +constraints"
     addons: {apt: {packages: [libgmp-dev]}}
 
   - env: BUILD=stack ARGS="--resolver nightly" PFLAGS="--flag *:constraints"
@@ -118,6 +146,10 @@ matrix:
 
   - env: BUILD=stack ARGS="--resolver lts-13"
     compiler: ": #stack 8.6.3 osx"
+    os: osx
+
+  - env: BUILD=stack ARGS="--resolver lts-15"
+    compiler: ": #stack 8.8.2 osx"
     os: osx
 
   - env: BUILD=stack ARGS="--resolver nightly"

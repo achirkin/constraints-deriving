@@ -152,8 +152,8 @@ toInstance (ToInstance omode) (NonRec bindVar bindExpr) = do
       Nothing -> pluginLocatedError loc notGoodMsg
       Just ma -> pure ma
     let matchedTy = substTyVar match varCls
-        instSig = mkSpecForAllTys bndrs $ mkFunTys theta matchedTy
-        bindBareTy = mkSpecForAllTys bndrs $ mkFunTys theta $ mkTyConApp tcBareConstraint [matchedTy]
+        instSig = mkSpecForAllTys bndrs $ mkInvisFunTys theta matchedTy
+        bindBareTy = mkSpecForAllTys bndrs $ mkInvisFunTys theta $ mkTyConApp tcBareConstraint [matchedTy]
 
     -- check if constraint is indeed a class and get it
     matchedClass <- case tyConAppTyCon_maybe matchedTy >>= tyConClass_maybe of

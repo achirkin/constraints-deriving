@@ -37,6 +37,9 @@ import qualified OccName
 import           Panic               (panicDoc)
 import           TcType              (tcSplitDFunTy)
 import qualified Unify
+#if __GLASGOW_HASKELL__ >= 810
+import           Predicate
+#endif
 
 import Data.Constraint.Deriving.CorePluginM
 
@@ -754,8 +757,8 @@ mtmiToExpression MatchingType {..} mi = do
   let extraTheta
             = filter (\t -> not $ any (eqType t . fst) bndrs) mtTheta
       tRepl = replaceTypeOccurrences mtBaseType mtNewType tOrig
-      tFun  = mkFunTys (extraTheta ++ map fst bndrs) tRepl
-      tvs   = tyCoVarsOfTypeWellScoped tFun
+      tFun  = mkInvisFunTys (extraTheta ++ map fst bndrs) tRepl
+      tvs   =  tyCoVarsOfTypeWellScoped tFun
   return
     ( mkSpecForAllTys tvs tFun
     , mkCoreLams (tvs ++ map mkWildValBinder extraTheta ++ map snd bndrs)
