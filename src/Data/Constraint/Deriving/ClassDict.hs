@@ -10,7 +10,7 @@ module Data.Constraint.Deriving.ClassDict
 import           Control.Monad (join, unless, when)
 import           Data.Data     (Data)
 import           Data.Maybe    (fromMaybe, isJust)
-import           GhcPlugins    hiding (OverlapMode (..), overlapMode)
+import           GhcPlugins    hiding (OverlapMode (..), overlapMode, mkFunTy)
 import qualified Unify
 
 import Data.Constraint.Deriving.CorePluginM
@@ -207,7 +207,7 @@ mapResultType :: (Type -> Type) -> Type -> Type
 mapResultType f t
   | (bndrs@(_:_), t') <- splitForAllTys t
     = mkSpecForAllTys bndrs $ mapResultType f t'
-  | Just (at, rt) <- splitFunTy_maybe t
-    = mkVisFunTy at (mapResultType f rt)
+  | Just (vis, at, rt) <- splitFunTyArg_maybe t
+    = mkFunTy vis at (mapResultType f rt)
   | otherwise
     = f t
