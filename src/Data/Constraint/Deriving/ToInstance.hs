@@ -14,7 +14,6 @@ import           Control.Monad       (join, unless)
 import           Data.Data           (Data)
 import           Data.Maybe          (fromMaybe, isJust)
 import           Data.Monoid         (First (..))
-import           GhcPlugins          hiding (OverlapMode (..), overlapMode)
 import qualified InstEnv
 import qualified OccName
 import           Panic               (panicDoc)

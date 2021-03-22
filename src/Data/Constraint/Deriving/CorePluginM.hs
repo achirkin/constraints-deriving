@@ -6,6 +6,9 @@
 #if __GLASGOW_HASKELL__ < 802
 {-# OPTIONS_GHC -fno-warn-redundant-constraints #-}
 #endif
+#if __GLASGOW_HASKELL__ < 810
+#define Pred PredTree
+#endif
 module Data.Constraint.Deriving.CorePluginM
   ( CorePluginM (), runCorePluginM
   , CorePluginEnv (), CorePluginEnvRef, initCorePluginEnv
@@ -30,11 +33,34 @@ module Data.Constraint.Deriving.CorePluginM
     -- * Debugging
   , pluginDebug, pluginTrace
   , HasCallStack
-  , splitFunTyArg_maybe
-  , mkFunTy
-#if __GLASGOW_HASKELL__ < 810
+    -- * Reexport common things
+  , CoreToDo (..), ModGuts (..), UniqFM, Name, CoreBind, Bind (..)
+  , CoreBndr, CoreExpr, Type, TyCon, ThetaType, TyVar, TCvSubst
+  , DataCon, PredType, FamTyConFlav (..), Coercion, Id
+  , Outputable(..), Role (..), Expr (..), IdDetails (..)
+  , EqRel (..), Pred(..), classifyPredType
+  , isNullUFM, ($+$), ($$), (<+>), vcat, hsep, sep, hcat, hang, text, speakN
+  , pprQuotedList, getOccString
+  , occName, nameSrcSpan, lookupUFM, eltsUFM, delFromUFM
+  , tyConSingleDataCon, splitTyConApp_maybe, tyConClass_maybe
+  , classDataCon, mkTyConApp, idType, dataConWorkId, typeKind
+  , mkCoreLams, mkCoreConApps, varsToCoreExprs
+  , splitForAllTys, splitFunTys, splitAppTy_maybe, getName
+  , mkSpecForAllTys, mkFunTy, splitFunTyArg_maybe
   , mkVisFunTy, mkInvisFunTy, mkVisFunTys, mkInvisFunTys
-#endif
+  , isNewTyCon, isClassTyCon, tyConDataCons, isEmptyTCvSubst
+  , tyConName, tyConTyVars, mkTyVarTys, tyConAppArgs_maybe, tyConAppTyCon_maybe
+  , getPackageFamInstEnv, substTyAddInScope
+  , extendTCvSubst, emptyTCvSubst, eqType, heqClass
+  , getTyVar_maybe, tyCoVarsOfTypesWellScoped, isCTupleTyConName, dataConInstSig
+  , famTyConFlav_maybe, splitFunTy_maybe
+  , mkTyVarTy, mkAppTy, substTys, zipTvSubst, mkTvSubstPrs
+  , mkReflCo, mkWildValBinder, tyCoVarsOfTypeWellScoped
+  , mkCast, mkUnsafeCo, mkCoreApps, mkTyApps
+  , getSrcSpanM, getUniqueM, mkInternalName, mkOccName, mkLocalIdOrCoVar
+  , occNameSpace, occNameString, getUnique, mkExportedLocalId
+  , uniqSetAny, orphNamesOfType, idName, nameModule, moduleNameString, getOccName
+  , moduleName, constraintKind, substTyVar, exprType
   ) where
 
 import qualified Avail
@@ -49,8 +75,12 @@ import           Data.Proxy          (Proxy (..))
 import           Data.Semigroup      as Sem (Semigroup (..))
 import qualified ErrUtils
 import qualified Finder
-import           GhcPlugins          hiding (OverlapMode (..), empty,
-                                      overlapMode, (<>), mkFunTy)
+import           GhcPlugins          hiding
+                                      ( OverlapMode (..), empty,overlapMode, (<>)
+#if __GLASGOW_HASKELL__ < 810
+                                      , mkFunTy
+#endif
+                                      )
 import qualified GhcPlugins
 import qualified IfaceEnv
 import           InstEnv             (InstEnv, InstEnvs)
@@ -70,6 +100,9 @@ import qualified TysWiredIn
 #if __GLASGOW_HASKELL__ < 806
 import qualified Kind      (isConstraintKind)
 import qualified TcRnMonad (initTcForLookup)
+#endif
+#if __GLASGOW_HASKELL__ >= 810
+import Predicate
 #endif
 #if __GLASGOW_HASKELL__ < 802
 import GHC.Stack (HasCallStack)
@@ -588,15 +621,15 @@ replaceTypeOccurrences told tnew = replace
         -- found occurrence
       | eqType t told
         = tnew
+        -- split arrow types
+      | Just (vis, at, rt) <- splitFunTyArg_maybe t
+        = mkFunTy vis (replace at) (replace rt)
         -- split type constructors
       | Just (tyCon, tys) <- splitTyConApp_maybe t
         = mkTyConApp tyCon $ map replace tys
         -- split foralls
       | (bndrs@(_:_), t') <- splitForAllTys t
         = mkSpecForAllTys bndrs $ replace t'
-        -- split arrow types
-      | Just (vis, at, rt) <- splitFunTyArg_maybe t
-        = mkFunTy vis (replace at) (replace rt)
         -- could not find anything
       | otherwise
         = t
@@ -782,7 +815,12 @@ splitFunTyArg_maybe ty =
         Just (arg, res) -> Just ((), arg, res)
         _               -> Nothing
 #else
-splitFunTyArg_maybe ty | Just ty' <- coreView ty = splitFunTyArg_maybe ty'
+splitFunTyArg_maybe ty | Just ty' <- tcView ty = splitFunTyArg_maybe ty'
 splitFunTyArg_maybe (TyCoRep.FunTy vis arg res)  = Just (vis, arg, res)
 splitFunTyArg_maybe _                            = Nothing
+#endif
+
+#if __GLASGOW_HASKELL__ < 802
+uniqSetAny :: (a -> Bool) -> UniqSet a -> Bool
+uniqSetAny g = foldl (\a -> (||) a . g) False
 #endif

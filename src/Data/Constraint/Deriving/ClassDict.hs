@@ -1,5 +1,4 @@
 {-# LANGUAGE DeriveDataTypeable #-}
-{-# LANGUAGE LambdaCase         #-}
 {-# LANGUAGE OverloadedStrings  #-}
 module Data.Constraint.Deriving.ClassDict
   ( ClassDict (..)
@@ -10,7 +9,6 @@ module Data.Constraint.Deriving.ClassDict
 import           Control.Monad (join, unless, when)
 import           Data.Data     (Data)
 import           Data.Maybe    (fromMaybe, isJust)
-import           GhcPlugins    hiding (OverlapMode (..), overlapMode, mkFunTy)
 import qualified Unify
 
 import Data.Constraint.Deriving.CorePluginM
@@ -106,7 +104,7 @@ newtype WithAnns a = WithAnns
   { runWithAnns :: UniqFM [Name] -> CorePluginM (UniqFM [Name], a) }
 
 instance Functor WithAnns where
-  fmap f m = WithAnns $ \anns -> fmap f <$> runWithAnns m anns
+  fmap f m = WithAnns $ fmap (fmap f) . runWithAnns m
 
 instance Applicative WithAnns where
   pure x = WithAnns $ \anns -> pure (anns, x)
@@ -178,7 +176,7 @@ classDict bindVar = do
             , hsep ["Found type:   ", ppr origBindTy]
             ]
 
-    argVars <- traverse (flip newLocalVar "t") argTys
+    argVars <- traverse (`newLocalVar` "t") argTys
     return
       . mkCoreLams (bndrs ++ argVars)
       $ mkCoreConApps conDict
@@ -208,6 +206,13 @@ mapResultType f t
   | (bndrs@(_:_), t') <- splitForAllTys t
     = mkSpecForAllTys bndrs $ mapResultType f t'
   | Just (vis, at, rt) <- splitFunTyArg_maybe t
-    = mkFunTy vis at (mapResultType f rt)
+  -- Looks like `idType (dataConWorkId klassDataCon)` has constraints as visible arguments.
+  -- I guess usually that does not change anything for the user, because they don't ever observe
+  -- type signatures of class data constructors.
+  -- This only pops up since 8.10 with the introduction of visibility arguments.
+  -- The check below workarounds this.
+    = if isConstraintKind (typeKind at)
+      then mkInvisFunTy at (mapResultType f rt)
+      else mkFunTy vis at (mapResultType f rt)
   | otherwise
     = f t

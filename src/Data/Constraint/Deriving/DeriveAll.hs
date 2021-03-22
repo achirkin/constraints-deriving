@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP                #-}
 {-# LANGUAGE DataKinds          #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE KindSignatures     #-}
@@ -28,18 +27,12 @@ import           Data.List           (groupBy, isPrefixOf, nubBy, sortOn)
 import           Data.Maybe          (catMaybes, fromMaybe)
 import           Data.Monoid
 import qualified FamInstEnv
-import           GhcPlugins          hiding (OverlapMode (..), overlapMode,
-                                      (<>))
-import qualified GhcPlugins
 import           InstEnv             (ClsInst, DFunInstType)
 import qualified InstEnv
 import qualified OccName
 import           Panic               (panicDoc)
 import           TcType              (tcSplitDFunTy)
 import qualified Unify
-#if __GLASGOW_HASKELL__ >= 810
-import           Predicate
-#endif
 
 import Data.Constraint.Deriving.CorePluginM
 
@@ -249,12 +242,12 @@ data MatchingType
 instance Outputable MatchingType where
   ppr MatchingType {..} = vcat
     [ "MatchingType"
-    , "{ mtCtxEqs      = " GhcPlugins.<> ppr mtCtxEqs
-    , ", mtTheta       = " GhcPlugins.<> ppr mtTheta
-    , ", mtOverlapMode = " GhcPlugins.<> text (show mtOverlapMode)
-    , ", mtBaseType    = " GhcPlugins.<> ppr mtBaseType
-    , ", mtNewType     = " GhcPlugins.<> ppr mtNewType
-    , ", mtIgnorelist  = " GhcPlugins.<> ppr mtIgnoreList
+    , "{ mtCtxEqs      =" <+> ppr mtCtxEqs
+    , ", mtTheta       =" <+> ppr mtTheta
+    , ", mtOverlapMode =" <+> text (show mtOverlapMode)
+    , ", mtBaseType    =" <+> ppr mtBaseType
+    , ", mtNewType     =" <+> ppr mtNewType
+    , ", mtIgnorelist  =" <+> ppr mtIgnoreList
     , "}"
     ]
 
@@ -328,7 +321,7 @@ tryHigherRanks mt@MatchingType {..}
   , Just ntv <- getTyVar_maybe nt
   , btv == ntv
     -- No constraints or anything else involving our TyVar
-  , not . elem btv
+  , notElem btv
         . (map fst mtCtxEqs ++)
         . tyCoVarsOfTypesWellScoped
       $ [mtBaseType', mtNewType']
@@ -556,8 +549,8 @@ expandFamily _ (ClosedSynFamilyTyCon (Just coax)) ft
     = withFamily ft (pure Nothing) $ const $ expandClosedFamily os bcs
   where
     bcs = fromBranches $ coAxiomBranches coax
-    os  = if any (not . null . coAxBranchIncomps) bcs
-          then map overlap bcs else repeat NoOverlap
+    os  = if all (null . coAxBranchIncomps) bcs
+          then repeat NoOverlap else map overlap bcs
     overlap cb = if null $ coAxBranchIncomps cb
           then Overlapping
           else Incoherent
@@ -625,7 +618,7 @@ expandDataFamily guts fTyCon fTyArgs = do
     expandDInstance inst
       | fitvs <- FamInstEnv.fi_tvs inst
       = do
-      tvs <- traverse freshenTyVar $ fitvs
+      tvs <- traverse freshenTyVar fitvs
       let freshenSub = zipTvSubst fitvs $ map mkTyVarTy tvs
           fitys = substTys freshenSub $ FamInstEnv.fi_tys inst
           instTyArgs = align fTyArgs fitys
@@ -888,18 +881,18 @@ lookupMatchingInstance da ie mt@MatchingType {..} baseInst
               $ foldMap (First . flip (recMatchTyKi True) mtBaseType) iTyPams
           , not $ isEmptyTCvSubst sub
             -> do
-            pluginDebug $ hang "Could not find an instance, trying again:" 2 $
-              vcat $ [ text "Base type:" <+> ppr mtBaseType
-                     , text "Instance:" <+> ppr baseInst
-                     , text "Substitution:" <+> ppr sub
-                    ]
+            pluginDebug $ hang "Could not find an instance, trying again:" 2 $ vcat
+              [ text "Base type:" <+> ppr mtBaseType
+              , text "Instance:" <+> ppr baseInst
+              , text "Substitution:" <+> ppr sub
+              ]
             lookupMatchingInstance da ie (substMatchingType sub mt) baseInst
           | otherwise
             -> do
-            pluginDebug $ hang "Ignored instance" 2 $
-              vcat $ [ text "Base type:" <+> ppr mtBaseType
-                     , text "Instance:" <+> ppr baseInst
-                     ]
+            pluginDebug $ hang "Ignored instance" 2 $ vcat
+              [ text "Base type:" <+> ppr mtBaseType
+              , text "Instance:" <+> ppr baseInst
+              ]
             pure Nothing
   | otherwise
     = pure Nothing
@@ -919,10 +912,6 @@ lookupMatchingInstance da ie mt@MatchingType {..} baseInst
 -- checks if none of the names in the type satisfy the predicate
 noneTy :: (Name -> Bool) -> Type -> Bool
 noneTy f = not . uniqSetAny f . orphNamesOfType
-#if __GLASGOW_HASKELL__ < 802
-  where
-    uniqSetAny g = foldl (\a -> (||) a . g) False
-#endif
 
 unwantedName :: DeriveAll -> Name -> Bool
 unwantedName da n

@@ -1,5 +1,6 @@
 .stack-work/
 constraints-deriving.cabal
+stack.yaml.lock
 *~
 TAGS
 *.hi

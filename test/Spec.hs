@@ -27,9 +27,18 @@ import           System.Exit
 import           System.FilePath       (isPathSeparator)
 import           System.IO
 
-#if !MIN_VERSION_path(0,7,0)
-replaceExtension :: String -> Path b File -> Maybe (Path b File)
-replaceExtension = setFileExtension
+replaceExt :: String -> Path b File -> Maybe (Path b File)
+#if MIN_VERSION_path(0,7,0)
+replaceExt = replaceExtension
+#else
+replaceExt = setFileExtension
+#endif
+
+removeExt :: Path b File -> Maybe (Path b File)
+#if MIN_VERSION_path(0,7,0)
+removeExt = fmap fst . splitExtension
+#else
+removeExt = setFileExtension ""
 #endif
 
 -- | Folder with test modules to be compiled
@@ -41,10 +50,10 @@ outDir :: Path Rel Dir
 outDir = [reldir|test/out/|]
 
 correspondingStdOut :: Path a File -> Maybe (Path Rel File)
-correspondingStdOut f = replaceExtension "stdout" $ outDir </> filename f
+correspondingStdOut f = replaceExt ".stdout" $ outDir </> filename f
 
 correspondingStdErr :: Path a File -> Maybe (Path Rel File)
-correspondingStdErr f = replaceExtension "stderr" $ outDir </> filename f
+correspondingStdErr f = replaceExt ".stderr" $ outDir </> filename f
 
 data TargetPaths = TargetPaths
   { targetName :: String
@@ -62,7 +71,7 @@ lookupTargetPaths p = do
 #endif
   guard $ ext == ".hs"
   targetPath <- Just $ toFilePath p
-  targetName <- toFilePath <$> replaceExtension "" (filename p)
+  targetName <- toFilePath <$> removeExt (filename p)
   stdoutPath <- toFilePath <$> correspondingStdOut p
   stderrPath <- toFilePath <$> correspondingStdErr p
   return TargetPaths {..}
@@ -105,10 +114,8 @@ main = do
               modSystemIO <- parseImportDecl "import System.IO (hFlush, stderr, stdout)"
               modSumTarget <- getModSummary $ mkModuleName $ "Spec." ++ targetName
               setContext [IIDecl modSystemIO, IIModule $ moduleName  $ ms_mod modSumTarget]
-              mainIsInScope
-                <- not . null . filter (("main" ==) . getOccString)
-                   <$> getNamesInScope
-              when (mainIsInScope) $ do
+              mainIsInScope <- any (("main" ==) . getOccString) <$> getNamesInScope
+              when mainIsInScope $ do
                 liftIO $ do
                   hDuplicateTo outH stdout
                   hDuplicateTo errH stderr
