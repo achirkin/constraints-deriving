@@ -11,12 +11,6 @@ module Data.Constraint.Deriving.DeriveAll
   , CorePluginEnvRef, initCorePluginEnv
   ) where
 
-
-import           Class               (Class, classTyCon)
-import           CoAxiom             (CoAxBranch, coAxBranchIncomps,
-                                      coAxBranchLHS, coAxBranchRHS,
-                                      coAxiomBranches, coAxiomSingleBranch,
-                                      fromBranches)
 import           Control.Applicative (Alternative (..))
 import           Control.Arrow       (second)
 import           Control.Monad       (join, unless)
@@ -25,14 +19,7 @@ import           Data.Either         (partitionEithers)
 import qualified Data.Kind           (Constraint, Type)
 import           Data.List           (groupBy, isPrefixOf, nubBy, sortOn)
 import           Data.Maybe          (catMaybes, fromMaybe)
-import           Data.Monoid
-import qualified FamInstEnv
-import           InstEnv             (ClsInst, DFunInstType)
-import qualified InstEnv
-import qualified OccName
-import           Panic               (panicDoc)
-import           TcType              (tcSplitDFunTy)
-import qualified Unify
+import           Data.Monoid         (First(..))
 
 import Data.Constraint.Deriving.CorePluginM
 
@@ -105,7 +92,7 @@ deriveAllPass' gs = go (mg_tcs gs) annotateds gs
 
     -- process type definitions present in the set of annotations
     go (x:xs) anns guts
-      | Just ((xn, da):ds) <- lookupUFM anns x = do
+      | Just ((xn, da):ds) <- lookupUFM anns (getUnique x) = do
       unless (null ds) $
         pluginLocatedWarning (nameSrcSpan xn) $
           "Ignoring redundant DeriveAll annotations" $$
@@ -117,7 +104,7 @@ deriveAllPass' gs = go (mg_tcs gs) annotateds gs
       pluginDebug $ "DeriveAll invoked on TyCon" <+> ppr x
       (newInstances, newBinds) <- unzip . fromMaybe [] <$> try (deriveAll da x guts)
       -- add new definitions and continue
-      go xs (delFromUFM anns x) guts
+      go xs (delFromUFM anns (getUnique x)) guts
         { mg_insts    = newInstances ++ mg_insts guts
         --   I decided to not modify mg_inst_env so that DeriveAll-derived instances
         --   do not refer to each other.
@@ -144,7 +131,7 @@ deriveAllPass' gs = go (mg_tcs gs) annotateds gs
     and type families in the newtype def.)
   Then, lookup all class instances for the found type instances.
  -}
-deriveAll :: DeriveAll -> TyCon -> ModGuts -> CorePluginM [(InstEnv.ClsInst, CoreBind)]
+deriveAll :: DeriveAll -> TyCon -> ModGuts -> CorePluginM [(ClsInst, CoreBind)]
 deriveAll da tyCon guts
 -- match good newtypes only
   | True <- isNewTyCon tyCon
@@ -181,14 +168,14 @@ deriveAll da tyCon guts
 
   where
     -- O(n^2) search for duplicates. Slow, but what else can I do?..
-    filterDupInsts = nubBy $ \(x,_) (y, _) -> InstEnv.identicalClsInstHead x y
+    filterDupInsts = nubBy $ \(x,_) (y, _) -> identicalClsInstHead x y
     mockInstance tc = do
       let tvs = tyConTyVars tc
           tys = mkTyVarTys tvs
       rhs <- ask tyEmptyConstraint
       return (tys, rhs)
     unpackInstance i
-      = let tys  = case tyConAppArgs_maybe <$> FamInstEnv.fi_tys i of
+      = let tys  = case tyConAppArgs_maybe <$> fi_tys i of
               [Just ts] -> ts
               _ -> panicDoc "DeriveAll" $
                 hsep
@@ -196,24 +183,24 @@ deriveAll da tyCon guts
                       <+> "matching an instance of type family DeriveContext:"
                   , ppr i, "at"
                   , ppr $ nameSrcSpan $ getName i]
-            rhs = FamInstEnv.fi_rhs i
+            rhs = fi_rhs i
         in (tys, rhs)
 
 
 -- | Find all instance of a type family in scope by its TyCon.
-lookupTyFamInstances :: ModGuts -> TyCon -> CorePluginM [FamInstEnv.FamInst]
+lookupTyFamInstances :: ModGuts -> TyCon -> CorePluginM [FamInst]
 lookupTyFamInstances guts fTyCon = do
     pkgFamInstEnv <- liftCoreM getPackageFamInstEnv
-    return $ FamInstEnv.lookupFamInstEnvByTyCon
+    return $ lookupFamInstEnvByTyCon
                (pkgFamInstEnv, mg_fam_inst_env guts) fTyCon
 
 -- | Find all possible instances of DeriveContext type family for a given TyCon
-lookupDeriveContextInstances :: ModGuts -> TyCon -> CorePluginM [FamInstEnv.FamInst]
+lookupDeriveContextInstances :: ModGuts -> TyCon -> CorePluginM [FamInst]
 lookupDeriveContextInstances guts tyCon = do
     allInsts <- ask tyConDeriveContext >>= lookupTyFamInstances guts
     return $ filter check allInsts
   where
-    check fi = case tyConAppTyCon_maybe <$> FamInstEnv.fi_tys fi of
+    check fi = case tyConAppTyCon_maybe <$> fi_tys fi of
       Just tc : _ -> tc == tyCon
       _           -> False
 
@@ -478,29 +465,6 @@ expandOneFamily guts mt@MatchingType{..} = case mfam of
       ]
 
 
--- -- TODO: Not sure if I need it at all;
---                   most of the API functions look through synonyms
--- -- | Try to remove all occurrences of type synonyms.
--- clearSynonyms :: Type -> Type
--- clearSynonyms t'
---       -- split type constructors
---     | Just (tyCon, tys) <- splitTyConApp_maybe t
---       = mkTyConApp tyCon $ map clearSynonyms tys
---       -- split foralls
---     | (bndrs@(_:_), t1) <- splitForAllTys t
---       = mkSpecForAllTys bndrs $ clearSynonyms t1
---       -- split arrow types
---     | Just (at, rt) <- splitFunTy_maybe t
---       = mkFunTy (clearSynonyms at) (clearSynonyms rt)
---     | otherwise
---       = t
---   where
---     stripOuter x = case tcView x of
---       Nothing -> x
---       Just y  -> stripOuter y
---     t = stripOuter t'
-
-
 -- | Depth-first lookup of the first occurrence of any type family.
 --   First argument is a list of types to ignore.
 lookupFamily :: [Type] -> Type -> Maybe (FamTyConFlav, Type)
@@ -517,7 +481,7 @@ lookupFamily ignoreLst t
     | (_:_, t') <- splitForAllTys t
       = lookupFamily ignoreLst t'
       -- split arrow types
-    | Just (at, rt) <- splitFunTy_maybe t
+    | Just (at, rt) <- getFunTyPair t
       = lookupFamily ignoreLst at <|> lookupFamily ignoreLst rt
     | otherwise
       = Nothing
@@ -584,7 +548,7 @@ expandClosedFamily os bs fTyArgs = fmap (Just . catMaybes) $ traverse go $ zip o
           flhs = substTys freshenSub flhs'
           frhs = substTyAddInScope freshenSub $ coAxBranchRHS cb
           t = foldl mkAppTy frhs $ drop n fTyArgs
-          msub = Unify.tcMatchTys (take n fTyArgs) flhs
+          msub = tcMatchTys (take n fTyArgs) flhs
       return $ (,,) om t <$> msub
 
 
@@ -600,7 +564,7 @@ expandOpenFamily guts fTyCon fTyArgs = do
     then pure $ Just [] -- No mercy
     else expandClosedFamily
            (repeat NoOverlap)
-           (coAxiomSingleBranch . FamInstEnv.famInstAxiom <$> tfInsts)
+           (coAxiomSingleBranch . famInstAxiom <$> tfInsts)
            fTyArgs
 
 
@@ -616,14 +580,14 @@ expandDataFamily guts fTyCon fTyArgs = do
     else sequence <$> traverse expandDInstance tfInsts
   where
     expandDInstance inst
-      | fitvs <- FamInstEnv.fi_tvs inst
+      | fitvs <- fi_tvs inst
       = do
       tvs <- traverse freshenTyVar fitvs
       let freshenSub = zipTvSubst fitvs $ map mkTyVarTy tvs
-          fitys = substTys freshenSub $ FamInstEnv.fi_tys inst
+          fitys = substTys freshenSub $ fi_tys inst
           instTyArgs = align fTyArgs fitys
       return $ (,,) NoOverlap (mkTyConApp fTyCon instTyArgs)
-        <$> Unify.tcMatchTys fTyArgs instTyArgs
+        <$> tcMatchTys fTyArgs instTyArgs
     align [] _          = []
     align xs []         = xs
     align (_:xs) (y:ys) = y : align xs ys
@@ -678,7 +642,7 @@ instance Outputable MatchingPredType where
   ppr (MptReflexive x)   = "MptReflexive" <+> ppr x
   ppr (MptPropagateAs x) = "MptPropagateAs" <+> ppr x
 
-findInstance :: InstEnv.InstEnvs
+findInstance :: InstEnvs
              -> Type
              -> ClsInst
              -> Maybe MatchingInstance
@@ -692,17 +656,17 @@ findInstance ie t i
   | otherwise
     = Nothing
   where
-    (_, _, iClass, iTyPams) = InstEnv.instanceSig i
+    (_, _, iClass, iTyPams) = instanceSig i
 
 
-matchInstance :: InstEnv.InstEnvs
+matchInstance :: InstEnvs
               -> Class
               -> [Type]
               -> Maybe MatchingInstance
 matchInstance ie cls ts
   | ([(i, tyVarSubs)], _notMatchButUnify, _safeHaskellStuff)
-      <- InstEnv.lookupInstEnv False ie cls ts
-  , (iTyVars, iTheta, _, _) <- InstEnv.instanceSig i
+      <- lookupInstEnv False ie cls ts
+  , (iTyVars, iTheta, _, _) <- instanceSig i
   , sub <- mkTvSubstPrs
          . catMaybes $ zipWith (fmap . (,)) iTyVars tyVarSubs
     = do
@@ -716,7 +680,7 @@ matchInstance ie cls ts
   | otherwise
     = Nothing
 
-matchPredType :: InstEnv.InstEnvs
+matchPredType :: InstEnvs
               -> PredType
               -> Maybe MatchingPredType
 matchPredType ie pt = go $ classifyPredType pt
@@ -732,7 +696,7 @@ matchPredType ie pt = go $ classifyPredType pt
       | eqType t1 t2   = Just . MptReflexive $ case rel of
                                           NomEq  -> mkReflCo Nominal t1
                                           ReprEq -> mkReflCo Representational t1
-      | Unify.typesCantMatch [(t1,t2)]
+      | typesCantMatch [(t1,t2)]
                        = Nothing
       | otherwise      = Just $ MptPropagateAs pt
     go _               = Just $ MptPropagateAs pt
@@ -754,7 +718,7 @@ mtmiToExpression MatchingType {..} mi = do
       tvs   =  tyCoVarsOfTypeWellScoped tFun
   return
     ( mkSpecForAllTys tvs tFun
-    , mkCoreLams (tvs ++ map mkWildValBinder extraTheta ++ map snd bndrs)
+    , mkCoreLams (tvs ++ map mkWildcardValBinder extraTheta ++ map snd bndrs)
       $ mkCast e
       $ mkUnsafeCo Representational tOrig tRepl
     )
@@ -778,14 +742,14 @@ miToExpression' availPTs MatchingInstance {..} = do
         )
       )
   where
-    (iTyVars, _, iClass, iTyPams) = InstEnv.instanceSig miInst
+    (iTyVars, _, iClass, iTyPams) = instanceSig miInst
     -- this is the same length as iTyVars, needs to be applied on dFunId
     tyVarVals = zipWith (fromMaybe . mkTyVarTy) iTyVars miInstTyVars
     sub = mkTvSubstPrs . catMaybes
           $ zipWith (fmap . (,)) iTyVars miInstTyVars
     newTyPams = map (substTyAddInScope sub) iTyPams
     newIHead = mkTyConApp (classTyCon iClass) newTyPams
-    eDFun = Var $ InstEnv.instanceDFunId miInst
+    eDFun = Var $ instanceDFunId miInst
     eDFunWithTyPams = mkTyApps eDFun tyVarVals
     addArgs :: [TyExp]
             -> [MatchingPredType]
@@ -817,8 +781,8 @@ mptToExpression ps (MptPropagateAs pt)
       loc <- liftCoreM getSrcSpanM
       u <- getUniqueM
       let n = mkInternalName u
-                (mkOccName OccName.varName $ "dFunArg_" ++ show u) loc
-          v = mkLocalIdOrCoVar n pt
+                (mkOccName varName $ "dFunArg_" ++ show u) loc
+          v = mkLocalIdOrCoVarCompat n pt
       return ([(pt,v)], Var v)
   where
       mte = getFirst $ foldMap getSamePT ps
@@ -850,7 +814,7 @@ lookupMatchingInstances da guts mt
 
 
 lookupMatchingInstance :: DeriveAll
-                       -> InstEnv.InstEnvs
+                       -> InstEnvs
                        -> MatchingType
                        -> ClsInst
                        -> CorePluginM (Maybe (ClsInst, CoreBind))
@@ -868,7 +832,7 @@ lookupMatchingInstance da ie mt@MatchingType {..} baseInst
               newDFunId = mkExportedLocalId
                 (DFunId isNewType) newN t
           return $ Just
-            ( InstEnv.mkLocalInstance
+            ( mkLocalInstance
                           newDFunId
                           ( deriveAllMode da $ mappend mtOverlapMode baseOM )
                           newTyVars iClass newTyPams
@@ -900,8 +864,8 @@ lookupMatchingInstance da ie mt@MatchingType {..} baseInst
     deriveAllMode (DeriveAll' m _) _ = toOverlapFlag m
     deriveAllMode  _               m = toOverlapFlag m
     baseOM = instanceOverlapMode baseInst
-    baseDFunId = InstEnv.instanceDFunId baseInst
-    (_, _, iClass, iTyPams) = InstEnv.instanceSig baseInst
+    baseDFunId = instanceDFunId baseInst
+    (_, _, iClass, iTyPams) = instanceSig baseInst
     isNewType = isNewTyCon (classTyCon iClass)
     baseDFunName = occName . idName $ baseDFunId
     newtypeNameS = case tyConAppTyCon_maybe mtNewType of

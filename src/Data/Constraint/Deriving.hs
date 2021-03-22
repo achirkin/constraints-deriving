@@ -14,8 +14,13 @@ module Data.Constraint.Deriving
 
 
 import Data.List  (sortOn)
+#if __GLASGOW_HASKELL__ >= 900
+import GHC.Plugins hiding (OverlapMode (..), overlapMode)
+import GHC.Core.InstEnv   (is_cls, is_tys)
+#else
 import GhcPlugins hiding (OverlapMode (..), overlapMode)
 import InstEnv    (is_cls, is_tys)
+#endif
 #if __GLASGOW_HASKELL__ < 808
 import Type (tyConAppTyCon_maybe)
 #endif

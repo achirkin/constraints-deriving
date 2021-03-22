@@ -9,9 +9,59 @@ module Data.Constraint.Deriving.ClassDict
 import           Control.Monad (join, unless, when)
 import           Data.Data     (Data)
 import           Data.Maybe    (fromMaybe, isJust)
-import qualified Unify
 
 import Data.Constraint.Deriving.CorePluginM
+    ( Name,
+      Outputable(ppr),
+      getName,
+      getUnique,
+      mkTyArg,
+      varsToCoreExprs,
+      classDataCon,
+      dataConWorkId,
+      idType,
+      mkCoreConApps,
+      mkCoreLams,
+      nameSrcSpan,
+      ($$),
+      ($+$),
+      bullet,
+      hcat,
+      hsep,
+      speakN,
+      vcat,
+      tyConClass_maybe,
+      tyConSingleDataCon,
+      mkTyConApp,
+      splitForAllTys,
+      splitTyConApp_maybe,
+      delFromUFM,
+      eltsUFM,
+      isNullUFM,
+      lookupUFM,
+      CoreToDo(CoreDoPluginPass),
+      Bind(Rec, NonRec),
+      CoreBind,
+      CoreBndr,
+      CoreExpr,
+      ModGuts(mg_binds),
+      occName,
+      UniqFM,
+      typesCantMatch,
+      CorePluginEnv(tyConDict),
+      CorePluginEnvRef,
+      CorePluginM,
+      runCorePluginM,
+      try,
+      ask,
+      initCorePluginEnv,
+      newLocalVar,
+      pluginLocatedError,
+      pluginWarning,
+      pluginLocatedWarning,
+      getModuleAnns,
+      splitFunTysUnscaled,
+      mapResultType )
 
 
 {- | A marker to tell the core plugin to replace the implementation of a
@@ -85,7 +135,7 @@ classDictPass' guts = do
       [" " , bullet, ppr $ occName n, ppr $ nameSrcSpan n]
     pprNotes = vcat . map (\x -> hsep [" ", bullet, x])
 
-    classDict' x origBind = WithAnns $ \anns -> case lookupUFM anns x of
+    classDict' x origBind = WithAnns $ \anns -> case lookupUFM anns (getUnique x) of
       Just (xn:xns) -> do
         unless (null xns) $
           pluginLocatedWarning (nameSrcSpan xn) $
@@ -96,7 +146,7 @@ classDictPass' guts = do
             , ")"
             ]
         -- add new definitions and continue
-        (,) (delFromUFM anns x)  . fromMaybe origBind <$> try (classDict x)
+        (,) (delFromUFM anns (getUnique x))  . fromMaybe origBind <$> try (classDict x)
       _ -> return (anns, origBind)
 
 -- a small state transformer for tracking remaining annotations
@@ -167,7 +217,7 @@ classDict bindVar = do
     let expectedType = mapResultType (mkTyConApp tcDict . (:[]))
                        . idType $ dataConWorkId klassDataCon
 
-    when (Unify.typesCantMatch [(origBindTy, expectedType)]) $
+    when (typesCantMatch [(origBindTy, expectedType)]) $
       pluginLocatedError loc $ vcat
             [ hsep
               [ "Cannot match the expected type (the type of the data constructor of the given class)"
@@ -188,7 +238,7 @@ classDict bindVar = do
   where
     origBindTy = idType bindVar
     (bndrs, bindTy) = splitForAllTys origBindTy
-    (argTys, dictTy) = splitFunTys bindTy
+    (argTys, dictTy) = splitFunTysUnscaled bindTy
     loc = nameSrcSpan $ getName bindVar
     notGoodMsg =
          "ClassDict plugin pass failed to process a Dict declaraion."
@@ -199,20 +249,3 @@ classDict bindVar = do
          , ppr bindVar, " :: "
          , ppr origBindTy
          ]
-
--- | Transform the result type in a more complex fun type.
-mapResultType :: (Type -> Type) -> Type -> Type
-mapResultType f t
-  | (bndrs@(_:_), t') <- splitForAllTys t
-    = mkSpecForAllTys bndrs $ mapResultType f t'
-  | Just (vis, at, rt) <- splitFunTyArg_maybe t
-  -- Looks like `idType (dataConWorkId klassDataCon)` has constraints as visible arguments.
-  -- I guess usually that does not change anything for the user, because they don't ever observe
-  -- type signatures of class data constructors.
-  -- This only pops up since 8.10 with the introduction of visibility arguments.
-  -- The check below workarounds this.
-    = if isConstraintKind (typeKind at)
-      then mkInvisFunTy at (mapResultType f rt)
-      else mkFunTy vis at (mapResultType f rt)
-  | otherwise
-    = f t

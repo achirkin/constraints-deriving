@@ -62,6 +62,11 @@ library:
   other-modules:
   - Data.Constraint.Deriving.CorePluginM
   when:
+  - condition: impl(ghc >= 9.0.0)
+    then:
+      source-dirs: src-newghc
+    else:
+      source-dirs: src-oldghc
   - condition: flag(debug)
     cpp-options: -DPLUGIN_DEBUG
   - condition: flag(constraints)

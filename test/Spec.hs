@@ -13,19 +13,31 @@ import           Data.List             (sort)
 import           Data.Maybe            (mapMaybe)
 import           Data.Monoid
 import           Data.Traversable      (for)
-import           DynFlags
-import           ErrUtils              (mkLocMessageAnn)
 import           GHC
 import           GHC.IO.Handle
 import           GHC.Paths             (libdir)
-import           MonadUtils            (liftIO)
-import           Name                  (getOccString)
-import           Outputable
 import           Path
 import           Path.IO
 import           System.Exit
 import           System.FilePath       (isPathSeparator)
 import           System.IO
+#if __GLASGOW_HASKELL__ >= 900
+import           GHC.Driver.Session    ( LogAction, gopt_set, gopt_unset, defaultFatalMessager
+                                       , defaultFlushOut, defaultLogActionHPrintDoc
+                                       , defaultLogActionHPutStrDoc)
+import           GHC.Utils.Error       (mkLocMessageAnn)
+import           GHC.Utils.Monad       (liftIO)
+import           GHC.Types.Name        (getOccString)
+import           GHC.Utils.Outputable
+#else
+import           DynFlags              ( LogAction, gopt_set, gopt_unset, defaultFatalMessager
+                                       , defaultFlushOut, defaultLogActionHPrintDoc
+                                       , defaultLogActionHPutStrDoc)
+import           ErrUtils              (mkLocMessageAnn)
+import           MonadUtils            (liftIO)
+import           Name                  (getOccString)
+import           Outputable
+#endif
 
 replaceExt :: String -> Path b File -> Maybe (Path b File)
 #if MIN_VERSION_path(0,7,0)
@@ -230,7 +242,7 @@ makeSimpleAndFast flags = flags
   , hscTarget   = HscInterpreted
   , verbosity   = 1
   , optLevel    = 0
-  , ways        = []
+  , ways        = mempty
   , useUnicode  = False
   } `gopt_set` Opt_DoCoreLinting
     `gopt_set` Opt_ForceRecomp
@@ -255,25 +267,36 @@ ghc800StaticFlagsFix = do
 --
 --   These all is to make testing output easy across different GHC versions.
 manualLogAction :: Handle -> Handle -> LogAction
-manualLogAction outH errH dflags _reason severity srcSpan style msg
+manualLogAction outH errH dflags _reason severity srcSpan
+#if __GLASGOW_HASKELL__ < 900
+  style
+#endif
+  msg
     = case severity of
-      SevOutput      -> printOut msg style
-      SevDump        -> printOut (msg $$ blankLine) style
-      SevInteractive -> putStrSDoc msg style
-      SevInfo        -> printErrs msg style
-      SevFatal       -> printErrs msg style
+      SevOutput      -> printOut msg
+      SevDump        -> printOut (msg $$ blankLine)
+      SevInteractive -> putStrSDoc msg
+      SevInfo        -> printErrs msg
+      SevFatal       -> printErrs msg
       SevWarning     -> printWarns
       SevError       -> printWarns
   where
+    message = mkLocMessageAnn Nothing severity srcSpan msg
+#if __GLASGOW_HASKELL__ >= 900
     printOut   = defaultLogActionHPrintDoc  dflags outH
     printErrs  = defaultLogActionHPrintDoc  dflags errH
     putStrSDoc = defaultLogActionHPutStrDoc dflags outH
-    message = mkLocMessageAnn Nothing severity srcSpan msg
+    printWarns = hPutChar errH '\n' >> printErrs message
+#else
+    printOut   m = defaultLogActionHPrintDoc  dflags outH m style
+    printErrs  m = defaultLogActionHPrintDoc  dflags errH m style
+    putStrSDoc m = defaultLogActionHPutStrDoc dflags outH m style
     printWarns = do
       hPutChar errH '\n'
-      printErrs message
+      defaultLogActionHPrintDoc dflags errH message
 #if __GLASGOW_HASKELL__ >= 802
         (setStyleColoured False style)
 #else
         style
+#endif
 #endif

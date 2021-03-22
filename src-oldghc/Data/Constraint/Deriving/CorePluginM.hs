@@ -29,7 +29,7 @@ module Data.Constraint.Deriving.CorePluginM
   , recMatchTyKi, replaceTypeOccurrences
   , OverlapMode (..), toOverlapFlag, instanceOverlapMode
   , lookupClsInsts, getInstEnvs, replaceInstance
-  , mkTyArg
+  , mkTyArg, mapResultType
     -- * Debugging
   , pluginDebug, pluginTrace
   , HasCallStack
@@ -47,7 +47,7 @@ module Data.Constraint.Deriving.CorePluginM
   , mkCoreLams, mkCoreConApps, varsToCoreExprs
   , splitForAllTys, splitFunTys, splitAppTy_maybe, getName
   , mkSpecForAllTys, mkFunTy, splitFunTyArg_maybe
-  , mkVisFunTy, mkInvisFunTy, mkVisFunTys, mkInvisFunTys
+  , mkVisFunTys, mkInvisFunTys
   , isNewTyCon, isClassTyCon, tyConDataCons, isEmptyTCvSubst
   , tyConName, tyConTyVars, mkTyVarTys, tyConAppArgs_maybe, tyConAppTyCon_maybe
   , getPackageFamInstEnv, substTyAddInScope
@@ -57,14 +57,28 @@ module Data.Constraint.Deriving.CorePluginM
   , mkTyVarTy, mkAppTy, substTys, zipTvSubst, mkTvSubstPrs
   , mkReflCo, mkWildValBinder, tyCoVarsOfTypeWellScoped
   , mkCast, mkUnsafeCo, mkCoreApps, mkTyApps
-  , getSrcSpanM, getUniqueM, mkInternalName, mkOccName, mkLocalIdOrCoVar
+  , getSrcSpanM, getUniqueM, mkInternalName, mkOccName
   , occNameSpace, occNameString, getUnique, mkExportedLocalId
   , uniqSetAny, orphNamesOfType, idName, nameModule, moduleNameString, getOccName
   , moduleName, constraintKind, substTyVar, exprType
+  , Unify.typesCantMatch, Unify.tcMatchTys, Unify.tcMatchTy
+  , splitFunTysUnscaled, panicDoc
+  , tcSplitDFunTy
+  , OccName.varName
+  , module CoAxiom
+  , module Class
+  , module FamInstEnv
+  , module InstEnv
+  , mkWildcardValBinder, getFunTyPair, mkLocalIdOrCoVarCompat
   ) where
 
+import           Class               (Class, classTyCon)
+import           CoAxiom             (CoAxBranch, coAxBranchIncomps,
+                                      coAxBranchLHS, coAxBranchRHS,
+                                      coAxiomBranches, coAxiomSingleBranch,
+                                      fromBranches)
+import           FamInstEnv          (FamInst, fi_tys, fi_tvs, fi_rhs, lookupFamInstEnvByTyCon, famInstAxiom)
 import qualified Avail
-import           Class               (Class)
 import           Control.Applicative (Alternative (..))
 import           Control.Monad       (join, (>=>))
 import           Data.Data           (Data, typeRep)
@@ -83,13 +97,15 @@ import           GhcPlugins          hiding
                                       )
 import qualified GhcPlugins
 import qualified IfaceEnv
-import           InstEnv             (InstEnv, InstEnvs)
+import           InstEnv             ( InstEnv, InstEnvs, ClsInst, DFunInstType, mkLocalInstance
+                                     , identicalClsInstHead, instanceSig, lookupInstEnv, instanceDFunId)
 import qualified InstEnv
 import qualified LoadIface
 import           MonadUtils          (MonadIO (..))
 import qualified OccName             (varName)
 import           TcRnMonad           (getEps, initTc)
 import           TcRnTypes           (TcM)
+import           TcType              (tcSplitDFunTy)
 import qualified Unify
 #if __GLASGOW_HASKELL__ >= 810
 import qualified TyCoRep
@@ -104,6 +120,7 @@ import qualified TcRnMonad (initTcForLookup)
 #if __GLASGOW_HASKELL__ >= 810
 import Predicate
 #endif
+import           Panic               (panicDoc)
 #if __GLASGOW_HASKELL__ < 802
 import GHC.Stack (HasCallStack)
 #endif
@@ -792,8 +809,7 @@ cnTypeEq = mkTcOcc "~"
 #if __GLASGOW_HASKELL__ < 810
 type AnonArgFlag = ()
 
-mkVisFunTy, mkInvisFunTy :: Type -> Type -> Type
-mkVisFunTy = GhcPlugins.mkFunTy
+mkInvisFunTy :: Type -> Type -> Type
 mkInvisFunTy = GhcPlugins.mkFunTy
 
 mkVisFunTys, mkInvisFunTys :: [Type] -> Type -> Type
@@ -815,7 +831,7 @@ splitFunTyArg_maybe ty =
         Just (arg, res) -> Just ((), arg, res)
         _               -> Nothing
 #else
-splitFunTyArg_maybe ty | Just ty' <- tcView ty = splitFunTyArg_maybe ty'
+splitFunTyArg_maybe ty | Just ty' <- coreView ty = splitFunTyArg_maybe ty'
 splitFunTyArg_maybe (TyCoRep.FunTy vis arg res)  = Just (vis, arg, res)
 splitFunTyArg_maybe _                            = Nothing
 #endif
@@ -824,3 +840,32 @@ splitFunTyArg_maybe _                            = Nothing
 uniqSetAny :: (a -> Bool) -> UniqSet a -> Bool
 uniqSetAny g = foldl (\a -> (||) a . g) False
 #endif
+
+splitFunTysUnscaled :: Type -> ([Type], Type)
+splitFunTysUnscaled = GhcPlugins.splitFunTys
+
+-- | Transform the result type in a more complex fun type.
+mapResultType :: (Type -> Type) -> Type -> Type
+mapResultType f t
+  | (bndrs@(_:_), t') <- splitForAllTys t
+    = mkSpecForAllTys bndrs $ mapResultType f t'
+  | Just (vis, at, rt) <- splitFunTyArg_maybe t
+  -- Looks like `idType (dataConWorkId klassDataCon)` has constraints as visible arguments.
+  -- I guess usually that does not change anything for the user, because they don't ever observe
+  -- type signatures of class data constructors.
+  -- This only pops up since 8.10 with the introduction of visibility arguments.
+  -- The check below workarounds this.
+    = if isConstraintKind (typeKind at)
+      then mkInvisFunTy at (mapResultType f rt)
+      else mkFunTy vis at (mapResultType f rt)
+  | otherwise
+    = f t
+
+mkWildcardValBinder :: Type -> Id
+mkWildcardValBinder = mkWildValBinder
+
+getFunTyPair :: Type -> Maybe (Type, Type)
+getFunTyPair = splitFunTy_maybe
+
+mkLocalIdOrCoVarCompat :: Name -> Type -> Id
+mkLocalIdOrCoVarCompat = mkLocalIdOrCoVar

@@ -8,16 +8,11 @@ module Data.Constraint.Deriving.ToInstance
   , CorePluginEnvRef, initCorePluginEnv
   ) where
 
-import           Class               (Class, classTyCon)
 import           Control.Applicative (Alternative (..))
 import           Control.Monad       (join, unless)
 import           Data.Data           (Data)
 import           Data.Maybe          (fromMaybe, isJust)
 import           Data.Monoid         (First (..))
-import qualified InstEnv
-import qualified OccName
-import           Panic               (panicDoc)
-import qualified Unify
 
 import Data.Constraint.Deriving.CorePluginM
 
@@ -92,7 +87,7 @@ toInstancePass' gs = go (reverse $ mg_binds gs) annotateds gs
 
     -- process type definitions present in the set of annotations
     go (cbx@(NonRec x _):xs) anns guts
-      | Just ((xn, ti):ds) <- lookupUFM anns x = do
+      | Just ((xn, ti):ds) <- lookupUFM anns (getUnique x) = do
       unless (null ds) $
         pluginLocatedWarning (nameSrcSpan xn) $
           "Ignoring redundant ToInstance annotations" $$
@@ -104,9 +99,9 @@ toInstancePass' gs = go (reverse $ mg_binds gs) annotateds gs
       -- add new definitions and continue
       try (toInstance ti cbx) >>= \case
         Nothing
-          -> go xs (delFromUFM anns x) guts
+          -> go xs (delFromUFM anns (getUnique x)) guts
         Just (newInstance, newBind)
-          -> go xs (delFromUFM anns x)
+          -> go xs (delFromUFM anns (getUnique x))
               (replaceInstance newInstance newBind guts)
                 { -- Remove original binding from the export list
                   --                                if it was there.
@@ -125,7 +120,7 @@ toInstancePass' gs = go (reverse $ mg_binds gs) annotateds gs
 --   The input core bind must have type `Ctx => Dict (Class t1 .. tn)`
 --
 --   The output is `instance {-# overlapMode #-} Ctx => Class t1 ... tn`
-toInstance :: ToInstance -> CoreBind -> CorePluginM (InstEnv.ClsInst, CoreBind)
+toInstance :: ToInstance -> CoreBind -> CorePluginM (ClsInst, CoreBind)
 
 toInstance _ (Rec xs) = do
     loc <- liftCoreM getSrcSpanM
@@ -147,7 +142,7 @@ toInstance (ToInstance omode) (NonRec bindVar bindExpr) = do
     let tyMatcher = mkTyConApp tcDict [mkTyVarTy varCls]
 
     -- Get instance definition
-    match <- case Unify.tcMatchTy tyMatcher dictTy of
+    match <- case tcMatchTy tyMatcher dictTy of
       Nothing -> pluginLocatedError loc notGoodMsg
       Just ma -> pure ma
     let matchedTy = substTyVar match varCls
@@ -172,7 +167,7 @@ toInstance (ToInstance omode) (NonRec bindVar bindExpr) = do
   where
     origBindTy = idType bindVar
     (bndrs, bindTy) = splitForAllTys origBindTy
-    (theta, dictTy) = splitFunTys bindTy
+    (theta, dictTy) = splitFunTysUnscaled bindTy
     loc = nameSrcSpan $ getName bindVar
     notGoodMsg =
          "ToInstance plugin pass failed to process a Dict declaraion."
@@ -199,15 +194,15 @@ mkNewInstance :: OverlapMode
               -> Class
               -> Id -- ^ Original core binding (with old type)
               -> CoreExpr -- ^ implementation, with a proper new type (instance signature)
-              -> CorePluginM (InstEnv.ClsInst, CoreBind)
+              -> CorePluginM (ClsInst, CoreBind)
 mkNewInstance omode cls bindVar bindExpr = do
-    n <- newName OccName.varName
+    n <- newName varName
        $ getOccString bindVar ++ "_ToInstance"
     let iDFunId = mkExportedLocalId
           (DFunId $ isNewTyCon (classTyCon cls))
           n itype
     return
-      ( InstEnv.mkLocalInstance iDFunId ioflag tvs cls tys
+      ( mkLocalInstance iDFunId ioflag tvs cls tys
       , NonRec iDFunId bindExpr
       )
   where
@@ -215,7 +210,7 @@ mkNewInstance omode cls bindVar bindExpr = do
     itype   = exprType bindExpr
 
     (tvs, itype') = splitForAllTys itype
-    (_, typeBody) = splitFunTys itype'
+    (_, typeBody) = splitFunTysUnscaled itype'
     tys = fromMaybe aAaaOmg $ tyConAppArgs_maybe typeBody
     aAaaOmg = panicDoc "ToInstance" $ hsep
       [ "Impossible happened:"
@@ -258,7 +253,7 @@ unwrapDictExpr dictT unwrapFun ex = case ex of
     wrap e = flip fmap (getClsT e) $ \t -> Var unwrapFun `App` t `App` e
     -- type variables may differ, so I need to use tcMatchTy.
     -- I do not check if resulting substition is not trivial. Shall I?
-    testType = isJust . Unify.tcMatchTy dictT . exprType
+    testType = isJust . tcMatchTy dictT . exprType
     getClsT e = case tyConAppArgs_maybe $ exprType e of
       Just [t] -> pure $ Type t
       _        -> unwrapFail
@@ -266,7 +261,7 @@ unwrapDictExpr dictT unwrapFun ex = case ex of
     mkLamApp =
       let et0          = exprType ex
           (bndrs, et1) = splitForAllTys et0
-          (theta, _  ) = splitFunTys et1
+          (theta, _  ) = splitFunTysUnscaled et1
       in  if null bndrs && null theta
             then unwrapFail
             else do
