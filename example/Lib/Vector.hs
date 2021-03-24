@@ -1,11 +1,9 @@
 {-# LANGUAGE CPP                        #-}
 {-# LANGUAGE DataKinds                  #-}
-{-# LANGUAGE ExplicitNamespaces         #-}
 {-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GADTs                      #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE MagicHash                  #-}
 {-# LANGUAGE MultiParamTypeClasses      #-}
 {-# LANGUAGE PatternSynonyms            #-}
 {-# LANGUAGE RoleAnnotations            #-}
@@ -27,7 +25,7 @@
   than the `Vector t 1` type is a newtype wrapper over `t`,
   and GHC statically uses all type class instances for `t`, sidestepping dynamic instance elaboration.
   But, if GHC does not know the dimensionality of the vector statically,
-  it selects class instances dynamically at runtime.  
+  it selects class instances dynamically at runtime.
  -}
 module Lib.Vector
   ( -- * Data types
@@ -41,8 +39,9 @@ module Lib.Vector
 import Data.Semigroup
 #endif
 import Data.Constraint
-import GHC.Base        (Type, unsafeCoerce#)
+import GHC.Base        (Type)
 import GHC.TypeLits    (type (+), type (-), KnownNat, Nat)
+import Unsafe.Coerce   (unsafeCoerce)
 
 import Lib.BackendFamily
 import Lib.VecBackend
@@ -87,12 +86,12 @@ vUncons :: forall t n m
                          , t ~ DataElemType (Vector t m)
                          )
                   , t, Vector t m )
-vUncons = case underiveKB @t @n of Dict -> unsafeCoerce# (bUncons @t @n @m)
+vUncons = case underiveKB @t @n of Dict -> unsafeCoerce (bUncons @t @n @m)
 
 vCons :: forall t n
        . KnownBackend (Vector t n)
       => t -> Vector t n -> Vector t (n + 1)
-vCons = case underiveKB @t @n of Dict -> unsafeCoerce# (bCons @t @n)
+vCons = case underiveKB @t @n of Dict -> unsafeCoerce (bCons @t @n)
 
 
 data SomeVector (t :: Type) where
@@ -114,4 +113,4 @@ deriving instance Semigroup (VecBackend t n (Backend t n)) => Semigroup (Vector 
 deriving instance Monoid (VecBackend t n (Backend t n)) => Monoid (Vector t n)
 
 underiveKB :: forall t n . KnownBackend (Vector t n) => Dict (KnownBackend (Backend t n))
-underiveKB = unsafeCoerce# (Dict @(KnownBackend (Vector t n)))
+underiveKB = unsafeCoerce (Dict @(KnownBackend (Vector t n)))

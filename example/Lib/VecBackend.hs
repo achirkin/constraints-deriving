@@ -30,7 +30,7 @@ import Data.Constraint
 import Data.Constraint.Deriving
 import Data.Constraint.Unsafe
 import GHC.Base
-import GHC.TypeLits             (KnownNat, Nat)
+import GHC.TypeLits
 import Unsafe.Coerce
 #if __GLASGOW_HASKELL__ < 804
 import Data.Semigroup

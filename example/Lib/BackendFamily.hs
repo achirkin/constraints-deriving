@@ -2,18 +2,15 @@
 {-# LANGUAGE ConstraintKinds        #-}
 {-# LANGUAGE DataKinds              #-}
 {-# LANGUAGE DefaultSignatures      #-}
-{-# LANGUAGE ExplicitNamespaces     #-}
 {-# LANGUAGE FlexibleContexts       #-}
 {-# LANGUAGE FlexibleInstances      #-}
 {-# LANGUAGE GADTs                  #-}
-{-# LANGUAGE MagicHash              #-}
 {-# LANGUAGE MultiParamTypeClasses  #-}
 {-# LANGUAGE PolyKinds              #-}
 {-# LANGUAGE RankNTypes             #-}
 {-# LANGUAGE ScopedTypeVariables    #-}
 {-# LANGUAGE StandaloneDeriving     #-}
 {-# LANGUAGE TypeApplications       #-}
-{-# LANGUAGE TypeFamilies           #-}
 {-# LANGUAGE TypeFamilyDependencies #-}
 {-# LANGUAGE TypeOperators          #-}
 {-# LANGUAGE UndecidableInstances   #-}
@@ -41,6 +38,7 @@ import Data.Constraint
 import Debug.Trace
 import GHC.Base
 import GHC.TypeLits
+import Unsafe.Coerce
 #if __GLASGOW_HASKELL__ < 804
 import Data.Semigroup
 #endif
@@ -102,7 +100,7 @@ class KnownBackend (t :: Type) where
                      , KnownBackend (Backend (DataElemType t) (DataDims t))
                      )
                   => BackendSing t
-    bSing = unsafeCoerce# (bSing @(Backend (DataElemType t) (DataDims t)))
+    bSing = unsafeCoerce (bSing @(Backend (DataElemType t) (DataDims t)))
 
 
 
@@ -144,7 +142,7 @@ instance KnownBackend (ScalarBase t) where
 instance KnownBackend (Vec2Base t) where
     bSing = BS2
 instance CmpNat n 2 ~ 'GT => KnownBackend (ListBase t n) where
-    bSing = case ( unsafeCoerce#
+    bSing = case ( unsafeCoerce
                      (Dict :: Dict (ListBase t n ~ ListBase t n) )
                            :: Dict (ListBase t n ~ Backend  t n)
                  ) of
@@ -204,10 +202,10 @@ bUncons x = case dataTypeDims x of
       ListBase _      -> error "Unexpected-length vector"
 
 unsafeDict :: forall a b . a => Dict a -> Dict b
-unsafeDict _ = unsafeCoerce# (Dict @a)
+unsafeDict _ = unsafeCoerce (Dict @a)
 
 dataTypeDims :: forall t n . Backend t n -> Dict (t ~ DataElemType (Backend t n), n ~ DataDims (Backend t n))
-dataTypeDims _ = unsafeCoerce# (Dict @(t ~ t, n ~ n))
+dataTypeDims _ = unsafeCoerce (Dict @(t ~ t, n ~ n))
 
 --  Hmm, would be interesting to "provide" KnownBackend (Backend t (n+1))
 bCons :: forall t n
@@ -218,7 +216,7 @@ bCons a as = case dataTypeDims @t @n as of
     BS0 -> ScalarBase a
     BS1 -> case as of ScalarBase b -> Vec2Base a b
     BS2 -> case as of Vec2Base b c -> ListBase [a,b,c]
-    BSn -> case as of ListBase as' -> unsafeCoerce# (ListBase (a : as'))
+    BSn -> case as of ListBase as' -> unsafeCoerce (ListBase (a : as'))
 
 bNil :: Backend t 0
 bNil = UnitBase
