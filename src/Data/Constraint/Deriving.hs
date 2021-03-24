@@ -11,24 +11,12 @@ module Data.Constraint.Deriving
   , ClassDict (..)
   ) where
 
-
-
-import Data.List  (sortOn)
-#if __GLASGOW_HASKELL__ >= 900
-import GHC.Plugins hiding (OverlapMode (..), overlapMode)
-import GHC.Core.InstEnv   (is_cls, is_tys)
-#else
-import GhcPlugins hiding (OverlapMode (..), overlapMode)
-import InstEnv    (is_cls, is_tys)
-#endif
-#if __GLASGOW_HASKELL__ < 808
-import Type (tyConAppTyCon_maybe)
-#endif
+import Data.List (sortOn)
 
 import Data.Constraint.Deriving.ClassDict
 import Data.Constraint.Deriving.DeriveAll
+import Data.Constraint.Deriving.Import
 import Data.Constraint.Deriving.ToInstance
-
 
 
 -- | To use the plugin, add
@@ -51,7 +39,7 @@ import Data.Constraint.Deriving.ToInstance
 plugin :: Plugin
 plugin = defaultPlugin
   { installCoreToDos = install
-#if MIN_VERSION_ghc(8,6,0)
+#if __GLASGOW_HASKELL__ >= 860
   , pluginRecompile = purePlugin
 #endif
   }
@@ -62,7 +50,7 @@ install cmdopts todo = do
     return ( deriveAllPass eref
            : classDictPass eref
            : toInstancePass eref
-           : if elem "dump-instances" cmdopts
+           : if "dump-instances" `elem` cmdopts
              then dumpInstances:todo
              else todo
            )

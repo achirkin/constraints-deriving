@@ -6,62 +6,13 @@ module Data.Constraint.Deriving.ClassDict
   , CorePluginEnvRef, initCorePluginEnv
   ) where
 
-import           Control.Monad (join, unless, when)
-import           Data.Data     (Data)
-import           Data.Maybe    (fromMaybe, isJust)
+import Control.Monad (join, unless, when)
+import Data.Data     (Data)
+import Data.Maybe    (fromMaybe, isJust)
+
 
 import Data.Constraint.Deriving.CorePluginM
-    ( Name,
-      Outputable(ppr),
-      getName,
-      getUnique,
-      mkTyArg,
-      varsToCoreExprs,
-      classDataCon,
-      dataConWorkId,
-      idType,
-      mkCoreConApps,
-      mkCoreLams,
-      nameSrcSpan,
-      ($$),
-      ($+$),
-      bullet,
-      hcat,
-      hsep,
-      speakN,
-      vcat,
-      tyConClass_maybe,
-      tyConSingleDataCon,
-      mkTyConApp,
-      splitForAllTys,
-      splitTyConApp_maybe,
-      delFromUFM,
-      eltsUFM,
-      isNullUFM,
-      lookupUFM,
-      CoreToDo(CoreDoPluginPass),
-      Bind(Rec, NonRec),
-      CoreBind,
-      CoreBndr,
-      CoreExpr,
-      ModGuts(mg_binds),
-      occName,
-      UniqFM,
-      typesCantMatch,
-      CorePluginEnv(tyConDict),
-      CorePluginEnvRef,
-      CorePluginM,
-      runCorePluginM,
-      try,
-      ask,
-      initCorePluginEnv,
-      newLocalVar,
-      pluginLocatedError,
-      pluginWarning,
-      pluginLocatedWarning,
-      getModuleAnns,
-      splitFunTysUnscaled,
-      mapResultType )
+import Data.Constraint.Deriving.Import
 
 
 {- | A marker to tell the core plugin to replace the implementation of a
@@ -98,7 +49,7 @@ deriveFooClass = deriveFooClass
        An incorrect signature will result in a compile-time error.
      * The dummy implementation @deriveFooClass = deriveFooClass@ is used here to
        prevent GHC from inlining the function before the plugin can replace it.
-       But you can implement in any way you like at your own risk.
+       But you can implement it in any way you like at your own risk.
  -}
 data ClassDict = ClassDict
   deriving (Eq, Show, Read, Data)
@@ -124,8 +75,8 @@ classDictPass' guts = do
          ]
     return guts { mg_binds = processedBinds}
   where
-    annotateds :: UniqFM [Name]
-    annotateds = map fst <$> (getModuleAnns guts :: UniqFM [(Name, ClassDict)])
+    annotateds :: UniqMap [Name]
+    annotateds = map fst <$> (getModuleAnns guts :: UniqMap [(Name, ClassDict)])
 
     go :: CoreBind -> WithAnns CoreBind
     go (NonRec b e) = NonRec b <$> classDict' b e
@@ -151,7 +102,7 @@ classDictPass' guts = do
 
 -- a small state transformer for tracking remaining annotations
 newtype WithAnns a = WithAnns
-  { runWithAnns :: UniqFM [Name] -> CorePluginM (UniqFM [Name], a) }
+  { runWithAnns :: UniqMap [Name] -> CorePluginM (UniqMap [Name], a) }
 
 instance Functor WithAnns where
   fmap f m = WithAnns $ fmap (fmap f) . runWithAnns m
@@ -238,7 +189,7 @@ classDict bindVar = do
   where
     origBindTy = idType bindVar
     (bndrs, bindTy) = splitForAllTys origBindTy
-    (argTys, dictTy) = splitFunTysUnscaled bindTy
+    (argTys, dictTy) = splitFunTysCompat bindTy
     loc = nameSrcSpan $ getName bindVar
     notGoodMsg =
          "ClassDict plugin pass failed to process a Dict declaraion."
@@ -249,3 +200,18 @@ classDict bindVar = do
          , ppr bindVar, " :: "
          , ppr origBindTy
          ]
+
+-- | Transform the result type in a more complex fun type.
+mapResultType :: (Type -> Type) -> Type -> Type
+mapResultType f t
+  | (bndrs@(_:_), t') <- splitForAllTys t
+    = mkSpecForAllTys bndrs $ mapResultType f t'
+  | Just (vis, m, at, rt) <- splitFunTyCompat t
+  -- Looks like `idType (dataConWorkId klassDataCon)` has constraints as visible arguments.
+  -- I guess usually that does not change anything for the user, because they don't ever observe
+  -- type signatures of class data constructors.
+  -- This only pops up since 8.10 with the introduction of visibility arguments.
+  -- The check below workarounds this.
+    = mkFunTyCompat (mkConstraintInvis at vis) m at (mapResultType f rt)
+  | otherwise
+    = f t

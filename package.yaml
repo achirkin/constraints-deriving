@@ -52,7 +52,7 @@ custom-setup:
 library:
   source-dirs: src
   dependencies:
-  - ghc >= 8.0.1
+  - ghc >= 8.0.1 && < 9.1
   exposed-modules:
   - Data.Constraint.Bare
   - Data.Constraint.Deriving
@@ -60,13 +60,11 @@ library:
   - Data.Constraint.Deriving.DeriveAll
   - Data.Constraint.Deriving.ToInstance
   other-modules:
+  - Data.Constraint.Deriving.Compat
   - Data.Constraint.Deriving.CorePluginM
+  - Data.Constraint.Deriving.Import
+  - Data.Constraint.Deriving.OverlapMode
   when:
-  - condition: impl(ghc >= 9.0.0)
-    then:
-      source-dirs: src-newghc
-    else:
-      source-dirs: src-oldghc
   - condition: flag(debug)
     cpp-options: -DPLUGIN_DEBUG
   - condition: flag(constraints)

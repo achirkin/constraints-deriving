@@ -8,13 +8,15 @@ module Data.Constraint.Deriving.ToInstance
   , CorePluginEnvRef, initCorePluginEnv
   ) where
 
-import           Control.Applicative (Alternative (..))
-import           Control.Monad       (join, unless)
-import           Data.Data           (Data)
-import           Data.Maybe          (fromMaybe, isJust)
-import           Data.Monoid         (First (..))
+import Control.Applicative (Alternative (..))
+import Control.Monad       (join, unless)
+import Data.Data           (Data)
+import Data.Maybe          (fromMaybe, isJust)
+import Data.Monoid         (First (..))
 
 import Data.Constraint.Deriving.CorePluginM
+import Data.Constraint.Deriving.Import
+import Data.Constraint.Deriving.OverlapMode
 
 
 {- | A marker to tell the core plugin to convert a top-level `Data.Constraint.Dict` binding into
@@ -64,10 +66,10 @@ toInstancePass eref = CoreDoPluginPass "Data.Constraint.Deriving.ToInstance"
 toInstancePass' :: ModGuts -> CorePluginM ModGuts
 toInstancePass' gs = go (reverse $ mg_binds gs) annotateds gs
   where
-    annotateds :: UniqFM [(Name, ToInstance)]
+    annotateds :: UniqMap [(Name, ToInstance)]
     annotateds = getModuleAnns gs
 
-    go :: [CoreBind] -> UniqFM [(Name, ToInstance)] -> ModGuts -> CorePluginM ModGuts
+    go :: [CoreBind] -> UniqMap [(Name, ToInstance)] -> ModGuts -> CorePluginM ModGuts
     -- All exports are processed, just return ModGuts
     go [] anns guts = do
       unless (isNullUFM anns) $
@@ -131,7 +133,7 @@ toInstance _ (Rec xs) = do
 
 toInstance (ToInstance omode) (NonRec bindVar bindExpr) = do
     -- check if all type arguments are constraint arguments
-    unless (all (isConstraintKind . typeKind) theta) $
+    unless (all (tcIsConstraintKind . typeKind) theta) $
       pluginLocatedError loc notGoodMsg
 
     -- get necessary definitions
@@ -146,8 +148,8 @@ toInstance (ToInstance omode) (NonRec bindVar bindExpr) = do
       Nothing -> pluginLocatedError loc notGoodMsg
       Just ma -> pure ma
     let matchedTy = substTyVar match varCls
-        instSig = mkSpecForAllTys bndrs $ mkInvisFunTys theta matchedTy
-        bindBareTy = mkSpecForAllTys bndrs $ mkInvisFunTys theta $ mkTyConApp tcBareConstraint [matchedTy]
+        instSig = mkSpecForAllTys bndrs $ mkInvisFunTysMany theta matchedTy
+        bindBareTy = mkSpecForAllTys bndrs $ mkInvisFunTysMany theta $ mkTyConApp tcBareConstraint [matchedTy]
 
     -- check if constraint is indeed a class and get it
     matchedClass <- case tyConAppTyCon_maybe matchedTy >>= tyConClass_maybe of
@@ -159,7 +161,7 @@ toInstance (ToInstance omode) (NonRec bindVar bindExpr) = do
     newExpr  <- case mnewExpr of
       Nothing -> pluginLocatedError loc notGoodMsg
       Just ex -> pure $ mkCast ex
-                      $ mkUnsafeCo Representational bindBareTy instSig
+                      $ mkPluginCo "(BareConstraint c ~ c)" Representational bindBareTy instSig
 
 
     mkNewInstance omode matchedClass bindVar newExpr
@@ -167,7 +169,7 @@ toInstance (ToInstance omode) (NonRec bindVar bindExpr) = do
   where
     origBindTy = idType bindVar
     (bndrs, bindTy) = splitForAllTys origBindTy
-    (theta, dictTy) = splitFunTysUnscaled bindTy
+    (theta, dictTy) = splitFunTysCompat bindTy
     loc = nameSrcSpan $ getName bindVar
     notGoodMsg =
          "ToInstance plugin pass failed to process a Dict declaraion."
@@ -210,7 +212,7 @@ mkNewInstance omode cls bindVar bindExpr = do
     itype   = exprType bindExpr
 
     (tvs, itype') = splitForAllTys itype
-    (_, typeBody) = splitFunTysUnscaled itype'
+    (_, typeBody) = splitFunTysCompat itype'
     tys = fromMaybe aAaaOmg $ tyConAppArgs_maybe typeBody
     aAaaOmg = panicDoc "ToInstance" $ hsep
       [ "Impossible happened:"
@@ -261,7 +263,7 @@ unwrapDictExpr dictT unwrapFun ex = case ex of
     mkLamApp =
       let et0          = exprType ex
           (bndrs, et1) = splitForAllTys et0
-          (theta, _  ) = splitFunTysUnscaled et1
+          (theta, _  ) = splitFunTysCompat et1
       in  if null bndrs && null theta
             then unwrapFail
             else do
@@ -270,3 +272,42 @@ unwrapDictExpr dictT unwrapFun ex = case ex of
                   allApps      = map (Type . mkTyVarTy) bndrs ++ map Var thetaVars
                   fullyApplied = foldl App ex allApps
               return $ foldr Lam fullyApplied allVars
+
+
+-- | Replace instance in ModGuts if its duplicate already exists there;
+--   otherwise just add this instance.
+replaceInstance :: ClsInst -> CoreBind -> ModGuts -> ModGuts
+replaceInstance newI newB guts
+  | NonRec _ newE <- newB
+  , First (Just oldI) <- foldMap sameInst $ mg_insts guts
+  , newDFunId <- instanceDFunId newI
+  , origDFunId <- instanceDFunId oldI
+  , dFunId <- newDFunId `setVarName`   idName origDFunId
+                        `setVarUnique` varUnique origDFunId
+  , bind   <- NonRec dFunId newE
+  , inst   <- setClsInstDfunId dFunId newI
+    = guts
+      { mg_insts    = replInst origDFunId inst $ mg_insts guts
+      , mg_inst_env = mg_inst_env guts
+           `deleteFromInstEnv` oldI
+           `extendInstEnv` inst
+      , mg_binds    = bind : remBind origDFunId (mg_binds guts)
+      }
+  | otherwise
+    = guts
+      { mg_insts    = newI : mg_insts guts
+      , mg_inst_env = extendInstEnv (mg_inst_env guts) newI
+      , mg_binds    = newB : mg_binds guts
+      }
+  where
+    remBind _ [] = []
+    remBind i' (b@(NonRec i _):bs)
+      | i == i'   = remBind i' bs
+      | otherwise = b  : remBind i' bs
+    remBind i' (Rec rb :bs) = Rec (filter ((i' /=) . fst) rb) : remBind i' bs
+    replInst _ _ [] = []
+    replInst d' i' (i:is)
+      | instanceDFunId i == d'   = i' : is
+      | otherwise = i : replInst d' i' is
+    sameInst i
+      = First $ if identicalClsInstHead newI i then Just i else Nothing

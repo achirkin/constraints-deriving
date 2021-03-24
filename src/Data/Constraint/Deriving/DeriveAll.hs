@@ -1,6 +1,5 @@
 {-# LANGUAGE DataKinds          #-}
 {-# LANGUAGE DeriveDataTypeable #-}
-{-# LANGUAGE KindSignatures     #-}
 {-# LANGUAGE LambdaCase         #-}
 {-# LANGUAGE OverloadedStrings  #-}
 {-# LANGUAGE RecordWildCards    #-}
@@ -19,9 +18,11 @@ import           Data.Either         (partitionEithers)
 import qualified Data.Kind           (Constraint, Type)
 import           Data.List           (groupBy, isPrefixOf, nubBy, sortOn)
 import           Data.Maybe          (catMaybes, fromMaybe)
-import           Data.Monoid         (First(..))
+import           Data.Monoid         (First (..))
 
 import Data.Constraint.Deriving.CorePluginM
+import Data.Constraint.Deriving.Import
+import Data.Constraint.Deriving.OverlapMode
 
 -- | A marker to tell the core plugin to derive all visible class instances
 --      for a given newtype.
@@ -77,10 +78,10 @@ deriveAllPass eref = CoreDoPluginPass "Data.Constraint.Deriving.DeriveAll"
 deriveAllPass' :: ModGuts -> CorePluginM ModGuts
 deriveAllPass' gs = go (mg_tcs gs) annotateds gs
   where
-    annotateds :: UniqFM [(Name, DeriveAll)]
+    annotateds :: UniqMap [(Name, DeriveAll)]
     annotateds = getModuleAnns gs
 
-    go :: [TyCon] -> UniqFM [(Name, DeriveAll)] -> ModGuts -> CorePluginM ModGuts
+    go :: [TyCon] -> UniqMap [(Name, DeriveAll)] -> ModGuts -> CorePluginM ModGuts
     -- All exports are processed, just return ModGuts
     go [] anns guts = do
       unless (isNullUFM anns) $
@@ -481,7 +482,7 @@ lookupFamily ignoreLst t
     | (_:_, t') <- splitForAllTys t
       = lookupFamily ignoreLst t'
       -- split arrow types
-    | Just (at, rt) <- getFunTyPair t
+    | Just (_, _, at, rt) <- splitFunTyCompat t
       = lookupFamily ignoreLst at <|> lookupFamily ignoreLst rt
     | otherwise
       = Nothing
@@ -714,13 +715,13 @@ mtmiToExpression MatchingType {..} mi = do
   let extraTheta
             = filter (\t -> not $ any (eqType t . fst) bndrs) mtTheta
       tRepl = replaceTypeOccurrences mtBaseType mtNewType tOrig
-      tFun  = mkInvisFunTys (extraTheta ++ map fst bndrs) tRepl
+      tFun  = mkInvisFunTysMany (extraTheta ++ map fst bndrs) tRepl
       tvs   =  tyCoVarsOfTypeWellScoped tFun
   return
     ( mkSpecForAllTys tvs tFun
-    , mkCoreLams (tvs ++ map mkWildcardValBinder extraTheta ++ map snd bndrs)
+    , mkCoreLams (tvs ++ map mkWildValBinderCompat extraTheta ++ map snd bndrs)
       $ mkCast e
-      $ mkUnsafeCo Representational tOrig tRepl
+      $ mkPluginCo "ignore newtype" Representational tOrig tRepl
     )
 
 
@@ -782,7 +783,7 @@ mptToExpression ps (MptPropagateAs pt)
       u <- getUniqueM
       let n = mkInternalName u
                 (mkOccName varName $ "dFunArg_" ++ show u) loc
-          v = mkLocalIdOrCoVarCompat n pt
+          v = mkLocalIdOrCoVarCompat n Many pt
       return ([(pt,v)], Var v)
   where
       mte = getFirst $ foldMap getSamePT ps
@@ -893,3 +894,66 @@ unwantedName da n
   where
     modName = moduleNameString . moduleName $ nameModule n
     valName = occNameString $ getOccName n
+
+-- | Replace all occurrences of one type in another.
+replaceTypeOccurrences :: Type -> Type -> Type -> Type
+replaceTypeOccurrences told tnew = replace
+  where
+    replace :: Type -> Type
+    replace t
+        -- found occurrence
+      | eqType t told
+        = tnew
+        -- split arrow types
+      | Just (vis, mu, at, rt) <- splitFunTyCompat t
+        = mkFunTyCompat vis mu (replace at) (replace rt)
+        -- split type constructors
+      | Just (tyCon, tys) <- splitTyConApp_maybe t
+        = mkTyConApp tyCon $ map replace tys
+        -- split foralls
+      | (bndrs@(_:_), t') <- splitForAllTys t
+        = mkSpecForAllTys bndrs $ replace t'
+        -- could not find anything
+      | otherwise
+        = t
+
+
+-- Made this similar to tcRnGetInfo
+--   and a hidden function lookupInsts used there
+lookupClsInsts :: InstEnvs -> TyCon -> [ClsInst]
+lookupClsInsts ie tc =
+  [ ispec        -- Search all
+  | ispec <- instEnvElts (ie_local  ie)
+          ++ instEnvElts (ie_global ie)
+  , instIsVisible (ie_visible ie) ispec
+  , tyConName tc `elemNameSet` orphNamesOfClsInst ispec
+  ]
+
+-- | Similar to Unify.tcMatchTyKis, but looks if there is a non-trivial subtype
+--   in the first type that matches the second.
+--   Non-trivial means not a TyVar.
+recMatchTyKi :: Bool -- ^ Whether to do inverse match (instance is more conrete)
+             -> Type -> Type -> Maybe TCvSubst
+recMatchTyKi inverse tsearched ttemp = go tsearched
+  where
+    go :: Type -> Maybe TCvSubst
+    go t
+        -- ignore plain TyVars
+      | isTyVarTy t
+        = Nothing
+        -- found a good substitution
+      | Just sub <- if inverse
+                    then tcMatchTyKi ttemp t
+                    else tcMatchTyKi t ttemp
+        = Just sub
+        -- split type constructors
+      | Just (_, tys) <- splitTyConApp_maybe t
+        = getFirst $ foldMap (First . go) tys
+        -- split foralls
+      | (_:_, t') <- splitForAllTys t
+        = go t'
+        -- split arrow types
+      | Just (_, _, at, rt) <- splitFunTyCompat t
+        = go at <|> go rt
+      | otherwise
+        = Nothing
